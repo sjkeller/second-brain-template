@@ -2,14 +2,20 @@
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
-      "Bash(py \"90 System/Automation/vault.py\" *)",
-      "Bash(python \"90 System/Automation/vault.py\" *)",
-      "Bash(python3 \"90 System/Automation/vault.py\" *)",
-      "Bash(py -m unittest discover -s \"90 System/Automation/tests\" *)",
-      "Bash(python3 -m unittest discover -s \"90 System/Automation/tests\" *)",
-      "PowerShell(py \"90 System/Automation/vault.py\" *)",
-      "PowerShell(python \"90 System/Automation/vault.py\" *)",
-      "PowerShell(python3 \"90 System/Automation/vault.py\" *)"
+      "Bash(py 90-system/automation/vault.py *)",
+      "Bash(py \"90-system/automation/vault.py\" *)",
+      "Bash(python 90-system/automation/vault.py *)",
+      "Bash(python \"90-system/automation/vault.py\" *)",
+      "Bash(python3 90-system/automation/vault.py *)",
+      "Bash(python3 \"90-system/automation/vault.py\" *)",
+      "PowerShell(py 90-system/automation/vault.py *)",
+      "PowerShell(py \"90-system/automation/vault.py\" *)",
+      "PowerShell(python 90-system/automation/vault.py *)",
+      "PowerShell(python \"90-system/automation/vault.py\" *)",
+      "PowerShell(python3 90-system/automation/vault.py *)",
+      "PowerShell(python3 \"90-system/automation/vault.py\" *)",
+      "Bash(py -m unittest discover -s 90-system/automation/tests *)",
+      "Bash(python3 -m unittest discover -s 90-system/automation/tests *)"
     ]
   },
   "hooks": {
@@ -20,7 +26,9 @@
           {
             "type": "command",
             "command": "python3",
-            "args": ["${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit.py"],
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/.claude/hooks/post-edit.py"
+            ],
             "timeout": 30,
             "statusMessage": "Stamping and checking the vault..."
           }

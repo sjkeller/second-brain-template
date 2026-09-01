@@ -4,5 +4,5 @@ description: Retrieve and diagnose an existing Obsidian second-brain vault. Use 
 argument-hint: [optional focus]
 ---
 
-Read `../../../90 System/Skills/vault-maintenance/SKILL.md` completely, then follow it.
+Read `../../../90-system/skills/vault-maintenance/SKILL.md` completely, then follow it.
 The path is relative to this adapter directory and is portable across Windows and POSIX.

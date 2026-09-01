@@ -1,0 +1,29 @@
+filters:
+  and:
+    - or:
+        - file.inFolder("10-projects")
+        - file.inFolder("20-areas")
+    - 'type != "moc"'
+properties:
+  status:
+    displayName: Status
+  updated:
+    displayName: Updated
+views:
+  - type: table
+    name: "Active"
+    filters:
+      and:
+        - 'status == "active"'
+    order:
+      - file.name
+      - type
+      - status
+      - updated
+  - type: table
+    name: "Everything here"
+    order:
+      - file.name
+      - type
+      - status
+      - updated

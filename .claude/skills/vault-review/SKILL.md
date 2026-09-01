@@ -4,5 +4,5 @@ description: Run the weekly review of this Obsidian second brain — process the
 argument-hint: [week, e.g. 2026-W36]
 ---
 
-Read `../../../90 System/Skills/vault-review/SKILL.md` completely, then follow it.
+Read `../../../90-system/skills/vault-review/SKILL.md` completely, then follow it.
 The path is relative to this adapter directory and is portable across Windows and POSIX.

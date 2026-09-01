@@ -1,0 +1,21 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - not:
+        - file.inFolder("90-system")
+    - or:
+        - file.inFolder("00-inbox")
+        - 'status == "draft"'
+properties:
+  status:
+    displayName: Status
+  created:
+    displayName: Captured
+views:
+  - type: table
+    name: "Needs triage"
+    order:
+      - file.name
+      - type
+      - status
+      - created

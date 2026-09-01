@@ -4,5 +4,5 @@ description: Capture a thought, link, quote, or fact into this Obsidian second b
 argument-hint: [what to capture]
 ---
 
-Read `../../../90 System/Skills/vault-capture/SKILL.md` completely, then follow it.
+Read `../../../90-system/skills/vault-capture/SKILL.md` completely, then follow it.
 The path is relative to this adapter directory and is portable across Windows and POSIX.

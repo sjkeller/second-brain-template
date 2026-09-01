@@ -3,10 +3,10 @@ __pycache__/
 .obsidian/workspace*.json
 .trash/
 
-# Generated: rebuild with `python3 "90 System/Automation/vault.py" index`
-90 System/Indexes/vault-index.json
+# Generated: rebuild with `python3 90-system/automation/vault.py index`
+90-system/indexes/vault-index.json
 
 # Disposable retrieval cache: parsed metadata, hashes, graph data, and term postings.
-90 System/Indexes/.vault-cache.sqlite3
-90 System/Indexes/.vault-cache.sqlite3-wal
-90 System/Indexes/.vault-cache.sqlite3-shm
+90-system/indexes/.vault-cache.sqlite3
+90-system/indexes/.vault-cache.sqlite3-wal
+90-system/indexes/.vault-cache.sqlite3-shm

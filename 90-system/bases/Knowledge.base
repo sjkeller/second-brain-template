@@ -1,0 +1,38 @@
+filters:
+  and:
+    - file.inFolder("40-knowledge")
+    - 'type != "moc"'
+properties:
+  status:
+    displayName: Status
+  updated:
+    displayName: Updated
+views:
+  - type: table
+    name: "Concepts"
+    filters:
+      and:
+        - 'type == "concept"'
+    order:
+      - file.name
+      - status
+      - updated
+  - type: table
+    name: "People and organizations"
+    filters:
+      or:
+        - 'type == "person"'
+        - 'type == "organization"'
+    order:
+      - file.name
+      - type
+      - updated
+  - type: table
+    name: "Drafts"
+    filters:
+      and:
+        - 'status == "draft"'
+    order:
+      - file.name
+      - type
+      - updated

@@ -4,5 +4,5 @@ description: Process the Inbox of this Obsidian second brain by clarifying each 
 argument-hint: [optional focus]
 ---
 
-Read `../../../90 System/Skills/vault-triage/SKILL.md` completely, then follow it.
+Read `../../../90-system/skills/vault-triage/SKILL.md` completely, then follow it.
 The path is relative to this adapter directory and is portable across Windows and POSIX.
