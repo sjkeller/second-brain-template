@@ -842,7 +842,7 @@ def command_index(root: Path, compact: bool) -> int:
         "note_count": len(notes),
         "notes": records,
     }
-    output_dir = root / "90-system" / "Indexes"
+    output_dir = root / "90-system" / "indexes"
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "vault-index.json").write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -1629,7 +1629,7 @@ def command_new(root: Path, note_type: str, title: str, folder: str | None, tags
         emit({"error": "folder_required", "type": "moc",
               "hint": "Pass --folder with the folder this MOC indexes."}, compact)
         return 2
-    template_path = root / "90-system" / "Templates" / TYPE_TEMPLATES[note_type]
+    template_path = root / "90-system" / "templates" / TYPE_TEMPLATES[note_type]
     if not template_path.is_file():
         emit({"error": "template_missing", "template": TYPE_TEMPLATES[note_type]}, compact)
         return 2

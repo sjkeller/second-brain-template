@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-VAULT_SCRIPT = PROJECT_ROOT / "90-system" / "Automation" / "vault.py"
+VAULT_SCRIPT = PROJECT_ROOT / "90-system" / "automation" / "vault.py"
 
 
 def load_vault_module():

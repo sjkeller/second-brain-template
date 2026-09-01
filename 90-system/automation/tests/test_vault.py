@@ -7,6 +7,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -696,6 +697,45 @@ class SkillPointerTests(VaultFixture):
         self.pointer("agents", target="90-system/skills/vault-maintenance/SKILL.md")
         issues = {finding["issue"] for finding in vault.check_skill_pointers(self.root)}
         self.assertIn("unexpected_target", issues)
+
+
+class PathCasingTests(unittest.TestCase):
+    """Folder names are lowercase-kebab. Windows is case-insensitive, so a stray capital
+    resolves fine here and only breaks on Linux -- these tests make it fail everywhere."""
+
+    SEGMENT = re.compile(r"^[0-9a-z._-]+$")
+
+    def assert_lowercase_path(self, value, source):
+        parts = value.replace("\\", "/").strip("/").split("/")
+        if "." in parts[-1]:
+            parts = parts[:-1]  # Trailing filename; only directory segments are constrained.
+        for segment in parts:
+            self.assertRegex(segment, self.SEGMENT, f"{source}: {value!r}")
+
+    def test_path_constants_are_lowercase(self):
+        for name in ("GENERATED_MARKDOWN", "GENERATED_JSON", "CACHE_RELATIVE"):
+            self.assert_lowercase_path(getattr(vault, name), name)
+        for group in ("EXEMPT_PREFIXES", "RETRIEVAL_EXCLUDED",
+                      "PLACEMENT_EXEMPT_PREFIXES", "MOC_EXEMPT_PREFIXES"):
+            for value in getattr(vault, group):
+                self.assert_lowercase_path(value, group)
+        for note_type, folder in vault.TYPE_FOLDERS.items():
+            self.assert_lowercase_path(folder, f"TYPE_FOLDERS[{note_type}]")
+
+    def test_repository_directories_are_lowercase(self):
+        root = vault.vault_root()
+        offenders = []
+        for path in root.rglob("*"):
+            if not path.is_dir():
+                continue
+            relative = path.relative_to(root)
+            if relative.parts[0] in {".git", ".obsidian"}:
+                continue
+            for segment in relative.parts:
+                if not self.SEGMENT.match(segment):
+                    offenders.append(relative.as_posix())
+                    break
+        self.assertEqual(offenders, [], "directories must be lowercase-kebab")
 
 
 if __name__ == "__main__":
