@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vault Maintenance"
+  short_description: "Retrieve and diagnose this Obsidian vault"
+  default_prompt: "Diagnose this existing vault using narrow retrieval, graph reports, and deterministic checks."
