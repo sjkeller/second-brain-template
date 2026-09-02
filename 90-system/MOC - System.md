@@ -14,6 +14,7 @@ The system layer explains how humans and agents operate this vault.
 
 - [[90-system/Agent Orientation|Agent Orientation]]
 - [[90-system/Vault Contract|Vault Contract]]
+- [[90-system/Source Trust Policy|Source Trust Policy]]
 - [[90-system/Link Policy|Link Policy]]
 - [[90-system/Retrieval Guide|Retrieval Guide]]
 - [[90-system/AI Handoff|AI Handoff]]

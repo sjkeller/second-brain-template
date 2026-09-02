@@ -17,6 +17,7 @@ Use these with Obsidian's Templates core plugin or copy them when creating a not
 - [[90-system/templates/Area Template|Area]]
 - [[90-system/templates/Concept Template|Concept]]
 - [[90-system/templates/Source Template|Source]]
+- [[90-system/templates/Raw Source Template|Raw source]]
 - [[90-system/templates/Decision Template|Decision]]
 - [[90-system/templates/Daily Note Template|Daily note]]
 - [[90-system/templates/Weekly Review Template|Weekly review]]

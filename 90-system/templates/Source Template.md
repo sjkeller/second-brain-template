@@ -10,6 +10,7 @@ author:
 published:
 accessed: "{{date:YYYY-MM-DD}}"
 url:
+raw_source:
 ---
 
 # {{title}}
@@ -18,7 +19,8 @@ Parent: [[30-resources/sources/MOC - Sources|Sources]]
 
 ## Source identity
 
-Record author, publisher, edition or version, and URL.
+Record author, publisher, edition or version, URL, and the immutable `raw_source` capture
+when one exists. This note interprets evidence; it is not the verbatim source of truth.
 
 ## Summary
 

@@ -39,6 +39,10 @@ FENCE_RE = re.compile(r"^\s*(?:```|~~~)")
 INLINE_LIST_RE = re.compile(r"^\[(.*)\]$")
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 ANCHOR = "vault:links"
+RAW_SOURCE_PREFIX = "30-resources/sources/raw/"
+RAW_SOURCE_BEGIN = "<!-- raw-source:begin -->"
+RAW_SOURCE_END = "<!-- raw-source:end -->"
+RAW_SOURCE_HASH_KEY = "content_sha256"
 
 EXCLUDED_DIRS = {".agents", ".claude", ".git", ".obsidian", "__pycache__", ".trash"}
 REQUIRED_KEYS = ("id", "type", "status", "created", "updated")
@@ -51,7 +55,7 @@ GENERATED_JSON = "90-system/indexes/vault-index.json"
 CACHE_RELATIVE = "90-system/indexes/.vault-cache.sqlite3"
 
 KNOWN_TYPES = (
-    "moc", "project", "area", "resource", "source", "concept", "person",
+    "moc", "project", "area", "resource", "source", "raw-source", "concept", "person",
     "organization", "journal", "review", "decision", "note", "system",
 )
 
@@ -62,6 +66,7 @@ TYPE_FOLDERS = {
     "area": "20-areas",
     "resource": "30-resources",
     "source": "30-resources/sources",
+    "raw-source": "30-resources/sources/raw",
     "concept": "40-knowledge/concepts",
     "person": "40-knowledge/people",
     "organization": "40-knowledge/organizations",
@@ -86,6 +91,7 @@ TYPE_TEMPLATES = {
     "area": "Area Template.md",
     "resource": "Resource Template.md",
     "source": "Source Template.md",
+    "raw-source": "Raw Source Template.md",
     "concept": "Concept Template.md",
     "person": "Person Template.md",
     "organization": "Organization Template.md",
@@ -108,8 +114,14 @@ DEFAULT_EXCERPT_CHARS = 320
 COMPACT_EXCERPT_CHARS = 160
 CHARS_PER_TOKEN = 4  # Deliberately rough; `pack` reports the exact character count too.
 
-ERROR_KEYS = ("unresolved_links", "duplicate_ids", "duplicate_titles", "skill_pointers")
-WARNING_KEYS = ("metadata_issues", "placement", "moc_coverage", "orphans", "stale", "tag_vocabulary")
+ERROR_KEYS = (
+    "unresolved_links", "duplicate_ids", "duplicate_titles", "skill_pointers",
+    "raw_source_integrity",
+)
+WARNING_KEYS = (
+    "metadata_issues", "placement", "moc_coverage", "orphans", "stale",
+    "tag_vocabulary", "raw_source_drafts",
+)
 
 DEFAULT_STALE_DAYS = 180
 DEFAULT_MAX_TAGS = 60
@@ -799,6 +811,59 @@ def parse_date(value: Any) -> date | None:
         return None
 
 
+def raw_source_payload(text: str) -> str | None:
+    """Return the normalized payload between the two raw-source sentinels.
+
+    The sentinels make the immutable boundary explicit: metadata and derived-note links
+    may evolve without changing the captured source. Duplicate, missing, or reversed
+    sentinels are rejected instead of guessing which region is authoritative.
+    """
+    if text.count(RAW_SOURCE_BEGIN) != 1 or text.count(RAW_SOURCE_END) != 1:
+        return None
+    start = text.index(RAW_SOURCE_BEGIN) + len(RAW_SOURCE_BEGIN)
+    end = text.index(RAW_SOURCE_END)
+    if start >= end:
+        return None
+    payload = text[start:end]
+    if payload.startswith("\r\n"):
+        payload = payload[2:]
+    elif payload.startswith(("\n", "\r")):
+        payload = payload[1:]
+    if payload.endswith("\r\n"):
+        payload = payload[:-2]
+    elif payload.endswith(("\n", "\r")):
+        payload = payload[:-1]
+    return payload.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def raw_source_digest(payload: str) -> str:
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def raw_source_finding(root: Path, note: Note) -> dict[str, str] | None:
+    """Validate one sealed raw source without mutating it."""
+    path = root / note.path
+    try:
+        text = path.read_text(encoding="utf-8-sig")
+    except (OSError, UnicodeDecodeError):
+        return {"path": note.path, "issue": "unreadable"}
+    payload = raw_source_payload(text)
+    if payload is None:
+        return {"path": note.path, "issue": "invalid_or_missing_payload_boundary"}
+    recorded = str(note.metadata.get(RAW_SOURCE_HASH_KEY, "")).strip()
+    if not recorded:
+        return {"path": note.path, "issue": "missing_content_sha256"}
+    actual = raw_source_digest(payload)
+    if recorded != actual:
+        return {
+            "path": note.path,
+            "issue": "payload_changed_after_seal",
+            "recorded": recorded,
+            "actual": actual,
+        }
+    return None
+
+
 def retrieval_filtered(notes: list[Note], include_templates: bool) -> list[Note]:
     if include_templates:
         return notes
@@ -976,6 +1041,8 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
     moc_coverage: list[dict[str, str]] = []
     stale: list[dict[str, Any]] = []
     tag_counter: Counter[str] = Counter()
+    raw_source_integrity: list[dict[str, str]] = []
+    raw_source_drafts: list[dict[str, str]] = []
 
     for note in notes:
         note_id = str(note.metadata.get("id", "")).strip()
@@ -995,6 +1062,15 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         note_type = str(note.metadata.get("type", "")).strip()
         if note_type and note_type not in KNOWN_TYPES:
             metadata_missing.append({"path": note.path, "unknown_type": note_type})
+
+        if note_type == "raw-source":
+            status = str(note.metadata.get("status", "")).strip()
+            if status != "immutable":
+                raw_source_drafts.append({"path": note.path, "status": status or "missing"})
+            else:
+                finding = raw_source_finding(root, note)
+                if finding:
+                    raw_source_integrity.append(finding)
 
         # Placement: the schema maps each type to a home folder.
         if (
@@ -1056,12 +1132,14 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         "duplicate_ids": duplicate_ids,
         "duplicate_titles": duplicate_titles,
         "skill_pointers": check_skill_pointers(root),
+        "raw_source_integrity": raw_source_integrity,
         "metadata_issues": metadata_missing,
         "placement": placement,
         "moc_coverage": moc_coverage,
         "orphans": orphans,
         "stale": stale,
         "tag_vocabulary": tag_vocabulary,
+        "raw_source_drafts": raw_source_drafts,
     }
 
     error_count = sum(len(findings[key]) for key in ERROR_KEYS)
@@ -1458,7 +1536,9 @@ def is_auto_stamp_target(relative: str) -> bool:
         return False
     if relative in ROOT_EXEMPT:
         return False
-    return not relative.startswith(("50-journal/", "90-system/", "99-attachments/"))
+    return not relative.startswith(
+        ("30-resources/sources/raw/", "50-journal/", "90-system/", "99-attachments/")
+    )
 
 
 def command_touch(root: Path, requested: str, stamp: str | None, only_durable: bool, compact: bool) -> int:
@@ -1481,6 +1561,85 @@ def command_touch(root: Path, requested: str, stamp: str | None, only_durable: b
         {"path": relative, "changed": changed, "updated": stamp or date.today().isoformat()},
         compact,
     )
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# immutable raw sources
+# ---------------------------------------------------------------------------
+
+
+def command_source_seal(root: Path, requested: str, verify_only: bool, compact: bool) -> int:
+    resolved = resolve_vault_path(root, requested)
+    if resolved is None:
+        emit({"error": "outside_vault", "requested": requested}, compact)
+        return 2
+    path, relative = resolved
+    if not path.is_file():
+        emit({"error": "source_not_found", "requested": requested}, compact)
+        return 2
+    if not relative.startswith(RAW_SOURCE_PREFIX):
+        emit({"error": "not_in_raw_source_folder", "path": relative}, compact)
+        return 2
+
+    text = path.read_text(encoding="utf-8-sig")
+    metadata, _ = parse_frontmatter(text)
+    if str(metadata.get("type", "")).strip() != "raw-source":
+        emit({"error": "not_a_raw_source", "path": relative}, compact)
+        return 2
+    payload = raw_source_payload(text)
+    if payload is None:
+        emit({"error": "invalid_or_missing_payload_boundary", "path": relative}, compact)
+        return 2
+    if not payload.strip():
+        emit({"error": "empty_raw_source_payload", "path": relative}, compact)
+        return 2
+
+    digest = raw_source_digest(payload)
+    recorded = str(metadata.get(RAW_SOURCE_HASH_KEY, "")).strip()
+    status = str(metadata.get("status", "")).strip()
+    if verify_only:
+        state = "verified" if status == "immutable" and recorded == digest else (
+            "modified" if recorded else "unsealed"
+        )
+        emit(
+            {
+                "path": relative,
+                "state": state,
+                "status": status,
+                "recorded": recorded,
+                "actual": digest,
+            },
+            compact,
+        )
+        return 0 if state == "verified" else 1
+
+    if status == "immutable" or recorded:
+        if status == "immutable" and recorded == digest:
+            emit({"path": relative, "sealed": False, "state": "already_verified"}, compact)
+            return 0
+        emit(
+            {
+                "error": "sealed_source_cannot_be_resealed",
+                "path": relative,
+                "hint": "Restore the captured payload or create a new superseding raw source.",
+            },
+            compact,
+        )
+        return 1
+
+    today = date.today().isoformat()
+    sealed = set_frontmatter(
+        text,
+        {
+            "status": "immutable",
+            "updated": today,
+            "sealed": today,
+            RAW_SOURCE_HASH_KEY: digest,
+        },
+    )
+    path.write_text(sealed if sealed.endswith("\n") else sealed + "\n", encoding="utf-8")
+    emit({"path": relative, "sealed": True, RAW_SOURCE_HASH_KEY: digest}, compact)
     return 0
 
 
@@ -1785,6 +1944,10 @@ def build_parser() -> argparse.ArgumentParser:
     touch_parser.add_argument("--only-durable", action="store_true",
                               help="No-op for Journal, System, and Attachments paths")
 
+    source_parser = sub("source-seal", "Seal or verify an immutable raw-source payload")
+    source_parser.add_argument("path")
+    source_parser.add_argument("--verify", action="store_true", help="Verify without writing")
+
     new_parser = sub("new", "Create a note from its template and link its MOC")
     new_parser.add_argument("--type", dest="note_type", required=True, choices=sorted(TYPE_TEMPLATES))
     new_parser.add_argument("--title", required=True)
@@ -1846,6 +2009,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_stale(root, args.days, compact)
     if args.command == "touch":
         return command_touch(root, args.path, args.stamp, args.only_durable, compact)
+    if args.command == "source-seal":
+        return command_source_seal(root, args.path, args.verify, compact)
     if args.command == "new":
         return command_new(root, args.note_type, args.title, args.folder, args.tags,
                            args.status, args.link_moc, args.dry_run, compact)

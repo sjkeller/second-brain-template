@@ -4,8 +4,8 @@
 Wired to Write|Edit through `python3` in .claude/settings.json. Reads the hook payload on
 stdin and:
 
-1. stamps `updated:` on the edited note, skipping Journal, System, and Attachments
-   (see `is_auto_stamp_target` in vault.py -- those are dated, generated, or binary);
+1. stamps `updated:` on the edited note, skipping sealed-source candidates, Journal,
+   System, and Attachments (see `is_auto_stamp_target` in vault.py);
 2. resolves note and attachment links and prints unresolved targets to stderr as a warning.
 
 It never blocks. Every failure path exits 0, because a broken hook must not stop an edit

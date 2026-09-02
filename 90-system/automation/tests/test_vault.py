@@ -190,6 +190,7 @@ class MutationTests(unittest.TestCase):
     def test_auto_stamp_exclusions(self):
         self.assertTrue(vault.is_auto_stamp_target("40-knowledge/concepts/A.md"))
         self.assertTrue(vault.is_auto_stamp_target("10-projects/B.md"))
+        self.assertFalse(vault.is_auto_stamp_target("30-resources/sources/raw/Article.md"))
         self.assertFalse(vault.is_auto_stamp_target("50-journal/daily/2026-09-01.md"))
         self.assertFalse(vault.is_auto_stamp_target("90-system/Link Policy.md"))
         self.assertFalse(vault.is_auto_stamp_target("99-attachments/x.md"))
@@ -580,6 +581,83 @@ class TouchTests(VaultFixture):
         self.assertEqual(payload["error"], "outside_vault")
 
 
+class RawSourceTests(VaultFixture):
+    def setUp(self):
+        super().setUp()
+        (self.root / "30-resources/sources/raw").mkdir(parents=True, exist_ok=True)
+        self.write(
+            "30-resources/sources/raw/MOC - Raw Sources.md",
+            note_text("moc-raw", "moc", "Raw Sources", "<!-- vault:links -->\n\n[[Home]]"),
+        )
+
+    def raw_text(self, payload="External source text.", status="draft", digest=""):
+        return note_text(
+            "raw-example",
+            "raw-source",
+            "Raw Example",
+            "[[30-resources/sources/raw/MOC - Raw Sources]]\n\n"
+            f"{vault.RAW_SOURCE_BEGIN}\n{payload}\n{vault.RAW_SOURCE_END}",
+            status=status,
+            extra=f"content_sha256: {digest}\nsealed:\n",
+        )
+
+    def seal(self, path="30-resources/sources/raw/Raw Example.md", verify=False):
+        return run(vault.command_source_seal, self.root, path, verify, True)
+
+    def test_payload_hash_is_newline_portable(self):
+        lf = f"{vault.RAW_SOURCE_BEGIN}\nA\nB\n{vault.RAW_SOURCE_END}"
+        crlf = lf.replace("\n", "\r\n")
+        self.assertEqual(vault.raw_source_payload(lf), "A\nB")
+        self.assertEqual(vault.raw_source_payload(crlf), "A\nB")
+
+    def test_seal_records_hash_and_verify_passes(self):
+        path = self.write("30-resources/sources/raw/Raw Example.md", self.raw_text())
+        code, payload = self.seal()
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["sealed"])
+        metadata, _ = vault.parse_frontmatter(path.read_text(encoding="utf-8"))
+        self.assertEqual(metadata["status"], "immutable")
+        self.assertEqual(len(metadata["content_sha256"]), 64)
+        verify_code, verify_payload = self.seal(verify=True)
+        self.assertEqual(verify_code, 0)
+        self.assertEqual(verify_payload["state"], "verified")
+
+    def test_sealed_payload_change_is_an_error_and_cannot_be_resealed(self):
+        path = self.write("30-resources/sources/raw/Raw Example.md", self.raw_text())
+        self.seal()
+        changed = path.read_text(encoding="utf-8").replace(
+            "External source text.", "Changed source text."
+        )
+        path.write_text(changed, encoding="utf-8")
+        reseal_code, reseal_payload = self.seal()
+        self.assertEqual(reseal_code, 1)
+        self.assertEqual(reseal_payload["error"], "sealed_source_cannot_be_resealed")
+        check_code, check_payload = run(
+            vault.command_check, self.root, compact=True, strict=False, quiet=False,
+            stale_days=vault.DEFAULT_STALE_DAYS, max_tags=vault.DEFAULT_MAX_TAGS,
+        )
+        self.assertEqual(check_code, 1)
+        self.assertEqual(
+            check_payload["errors"]["raw_source_integrity"][0]["issue"],
+            "payload_changed_after_seal",
+        )
+
+    def test_draft_is_warning_and_source_outside_folder_is_refused(self):
+        self.write("30-resources/sources/raw/Raw Example.md", self.raw_text())
+        _, check_payload = run(
+            vault.command_check, self.root, compact=True, strict=False, quiet=False,
+            stale_days=vault.DEFAULT_STALE_DAYS, max_tags=vault.DEFAULT_MAX_TAGS,
+        )
+        self.assertEqual(
+            check_payload["warnings"]["raw_source_drafts"][0]["path"],
+            "30-resources/sources/raw/Raw Example.md",
+        )
+        self.write("00-inbox/Raw Example.md", self.raw_text())
+        code, payload = self.seal("00-inbox/Raw Example.md")
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "not_in_raw_source_folder")
+
+
 class ReportingTests(VaultFixture):
     def test_tasks_lists_open_items(self):
         code, payload = run(vault.command_tasks, self.root, None, "open", True)
@@ -713,7 +791,7 @@ class PathCasingTests(unittest.TestCase):
             self.assertRegex(segment, self.SEGMENT, f"{source}: {value!r}")
 
     def test_path_constants_are_lowercase(self):
-        for name in ("GENERATED_MARKDOWN", "GENERATED_JSON", "CACHE_RELATIVE"):
+        for name in ("GENERATED_MARKDOWN", "GENERATED_JSON", "CACHE_RELATIVE", "RAW_SOURCE_PREFIX"):
             self.assert_lowercase_path(getattr(vault, name), name)
         for group in ("EXEMPT_PREFIXES", "RETRIEVAL_EXCLUDED",
                       "PLACEMENT_EXEMPT_PREFIXES", "MOC_EXEMPT_PREFIXES"):

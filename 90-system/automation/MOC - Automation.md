@@ -35,8 +35,10 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 - `... new --type concept --title "Name" --tags "a,b"` — renders the template, generates
   the id, stamps the dates, and links the parent MOC under its `vault:links` anchor.
   `--dry-run` prints the note without writing it.
-- `... touch "path.md"` — stamp `updated`. `--only-durable` makes it a no-op for Journal,
-  System, and Attachments, which is how the edit hook uses it.
+- `... touch "path.md"` — stamp `updated`. `--only-durable` makes it a no-op for raw-source
+  payloads, Journal, System, and Attachments, which is how the edit hook uses it.
+- `... source-seal "30-resources/sources/raw/<note>.md"` — hash the delimited payload and
+  change a draft raw source to `status: immutable`. Add `--verify` for a read-only check.
 
 ## Report
 
@@ -49,9 +51,9 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 
 - `... check` — separates **errors** from **warnings** and exits nonzero only on errors.
   - Errors: unresolved note or attachment links, duplicate ids, duplicate titles, broken
-    or drifted skill pointers.
+    or drifted skill pointers, and changed or structurally invalid sealed raw-source payloads.
   - Warnings: missing frontmatter keys, type/folder placement, notes with no MOC edge,
-    orphans, staleness, tag sprawl.
+    orphans, staleness, tag sprawl, and raw sources that have not been sealed yet.
   - `--strict` fails on warnings too; `--quiet` prints the summary and errors only.
 - `... cache` / `cache --rebuild` — inspect or discard the retrieval cache.
 - `python3 -m unittest discover -s 90-system/automation/tests` — the test suite.

@@ -5,8 +5,8 @@ Read this only when creating, moving, or validating notes.
 ## Core properties
 
 - `id`: stable lowercase kebab-case identifier; never reuse.
-- `type`: one of `moc`, `project`, `area`, `resource`, `source`, `concept`, `person`,
-  `organization`, `journal`, `review`, `decision`, `note`, or `system`.
+- `type`: one of `moc`, `project`, `area`, `resource`, `source`, `raw-source`, `concept`,
+  `person`, `organization`, `journal`, `review`, `decision`, `note`, or `system`.
 - `status`: normally `draft`, `active`, `accepted`, `ready`, `superseded`, or `archived`.
 - `created` and `updated`: ISO `YYYY-MM-DD`.
 - `aliases` and `tags`: optional lists.
@@ -27,6 +27,7 @@ Each type has a home folder, and `check` reports notes that sit outside it:
 | `area` | `20-areas` |
 | `resource` | `30-resources` |
 | `source` | `30-resources/sources` |
+| `raw-source` | `30-resources/sources/raw` |
 | `concept` | `40-knowledge/concepts` |
 | `person` | `40-knowledge/people` |
 | `organization` | `40-knowledge/organizations` |
@@ -41,6 +42,10 @@ yet, and notes under `80-archive` keep the type they had when they were archived
 
 Unclear destination → `00-inbox`. Inactive material → `80-archive`. Operating metadata →
 `90-system`.
+
+`raw-source` notes begin as drafts. Their verbatim payload is bounded by fixed sentinels and
+becomes immutable when `vault.py source-seal` records its SHA-256 digest. Metadata and
+derived-note links outside the payload may still change. See [[90-system/Source Trust Policy]].
 
 ## Linking
 
