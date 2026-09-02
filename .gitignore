@@ -26,3 +26,6 @@ __pycache__/
 90-system/evals/*.jsonl
 90-system/evals/*.json
 !90-system/evals/*.example.jsonl
+
+# Reviewed merge bodies are temporary local inputs, never canonical vault content.
+90-system/indexes/.merge-drafts/

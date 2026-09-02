@@ -896,6 +896,176 @@ class RawSourceTests(VaultFixture):
         self.assertEqual(payload["error"], "not_in_raw_source_folder")
 
 
+class SafeMergeTests(VaultFixture):
+    def write_merged_body(self, body=None):
+        return self.write(
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            body or (
+                "# Retrieval\n\nConsolidated retrieval guidance.\n\n"
+                "[[40-knowledge/concepts/MOC - Concepts]]\n\n[[Home]]\n"
+            ),
+        )
+
+    def preview(self):
+        return run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            False,
+            None,
+            False,
+            True,
+        )
+
+    def test_dry_run_is_non_mutating_and_hashes_exact_inputs(self):
+        self.write_merged_body()
+        canonical = self.root / "40-knowledge/concepts/Retrieval.md"
+        retired = self.root / "10-projects/Build Search.md"
+        before = (canonical.read_text(encoding="utf-8"), retired.read_text(encoding="utf-8"))
+        code, payload = self.preview()
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["dry_run"])
+        self.assertRegex(payload["plan_sha256"], r"^[0-9a-f]{64}$")
+        self.assertFalse(payload["changes"]["retired_deleted"])
+        self.assertEqual(
+            before,
+            (canonical.read_text(encoding="utf-8"), retired.read_text(encoding="utf-8")),
+        )
+
+    def test_apply_requires_preview_hash_then_leaves_valid_redirect(self):
+        self.write_merged_body()
+        code, preview = self.preview()
+        self.assertEqual(code, 0)
+        code, missing = run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            True,
+            None,
+            False,
+            True,
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(missing["error"], "plan_confirmation_required")
+
+        code, applied = run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            True,
+            preview["plan_sha256"],
+            False,
+            True,
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(applied["applied"])
+        canonical = (self.root / "40-knowledge/concepts/Retrieval.md").read_text(encoding="utf-8")
+        retired = (self.root / "10-projects/Build Search.md").read_text(encoding="utf-8")
+        canonical_metadata, canonical_body = vault.parse_frontmatter(canonical)
+        retired_metadata, _ = vault.parse_frontmatter(retired)
+        self.assertIn("Build Search", canonical_metadata["aliases"])
+        self.assertIn("10-projects/Build Search.md", canonical_metadata["merged_from"])
+        self.assertIn("Consolidated retrieval guidance", canonical_body)
+        self.assertEqual(retired_metadata["type"], "redirect")
+        self.assertEqual(retired_metadata["status"], "superseded")
+        self.assertIn("[[40-knowledge/concepts/Retrieval|Retrieval]]", retired)
+        self.assertFalse((self.root / "10-projects/Build Search.md").is_symlink())
+
+        code, health = run(vault.command_check, self.root, True, False, True, 180, 60)
+        self.assertEqual(code, 0, health)
+        self.assertEqual(health["summary"]["redirect_integrity"], 0)
+
+    def test_changed_input_invalidates_plan(self):
+        draft = self.write_merged_body()
+        _, preview = self.preview()
+        draft.write_text("# Retrieval\n\nChanged after preview.\n", encoding="utf-8")
+        code, payload = run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            True,
+            preview["plan_sha256"],
+            True,
+            True,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"], "plan_changed")
+
+    def test_warnings_need_separate_acceptance(self):
+        self.write(
+            "10-projects/Build Search.md",
+            note_text(
+                "build-search", "project", "Build Search",
+                "Project material. [[Home]] [[60-decisions/Uncopied Decision]]",
+                extra="owner: Retired Owner\n",
+            ),
+        )
+        self.write_merged_body("# Retrieval\n\nConsolidated.\n\n[[Home]]\n")
+        _, preview = self.preview()
+        self.assertTrue(preview["warnings_require_acceptance"])
+        self.assertEqual(preview["metadata_conflicts"][0]["key"], "owner")
+        self.assertIn("60-decisions/Uncopied Decision", preview["links_at_risk"])
+        code, payload = run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            True,
+            preview["plan_sha256"],
+            False,
+            True,
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["error"], "merge_warnings_not_accepted")
+
+    def test_rejects_wrong_title_and_system_notes(self):
+        self.write_merged_body("# Different identity\n")
+        code, payload = self.preview()
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "merged_body_title_mismatch")
+
+        code, payload = run(
+            vault.command_merge,
+            self.root,
+            "Home.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            False,
+            None,
+            False,
+            True,
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "note_not_mergeable")
+
+    def test_checker_rejects_redirect_chains(self):
+        self.write(
+            "00-inbox/Redirect One.md",
+            note_text(
+                "redirect-one", "redirect", "Redirect One", "[[00-inbox/Redirect Two]]",
+                status="superseded", extra="redirect_to: '[[00-inbox/Redirect Two]]'\n",
+            ),
+        )
+        self.write(
+            "00-inbox/Redirect Two.md",
+            note_text(
+                "redirect-two", "redirect", "Redirect Two", "[[40-knowledge/concepts/Retrieval]]",
+                status="superseded", extra="redirect_to: '[[40-knowledge/concepts/Retrieval]]'\n",
+            ),
+        )
+        findings = vault.redirect_findings(vault.scan_notes(self.root))
+        self.assertTrue(any(item["issue"] == "redirect_chain" for item in findings))
+
+
 class ReportingTests(VaultFixture):
     def test_tasks_lists_open_items(self):
         code, payload = run(vault.command_tasks, self.root, None, "open", True)

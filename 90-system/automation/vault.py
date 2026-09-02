@@ -18,9 +18,11 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import sys
+import tempfile
 import unicodedata
 from collections import Counter, defaultdict, deque
 from dataclasses import dataclass, field
@@ -72,7 +74,7 @@ RETRIEVAL_EVAL_SCHEMA_VERSION = 1
 
 KNOWN_TYPES = (
     "moc", "project", "area", "resource", "source", "raw-source", "concept", "person",
-    "organization", "journal", "review", "decision", "note", "system",
+    "organization", "journal", "review", "decision", "note", "redirect", "system",
 )
 
 # Folder each note type belongs in. `check placement` verifies membership; `new` uses it
@@ -95,7 +97,7 @@ TYPE_FOLDERS = {
 
 # Types whose placement is advisory rather than enforced: `note` is the catch-all capture
 # type and legitimately lives anywhere, and `moc` sits inside the folder it indexes.
-PLACEMENT_UNCONSTRAINED = {"moc", "note"}
+PLACEMENT_UNCONSTRAINED = {"moc", "note", "redirect"}
 
 # Folders whose contents are exempt from placement and MOC-coverage checks.
 PLACEMENT_EXEMPT_PREFIXES = ("00-inbox/", "80-archive/", "90-system/", "99-attachments/")
@@ -132,7 +134,7 @@ CHARS_PER_TOKEN = 4  # Deliberately rough; `pack` reports the exact character co
 
 ERROR_KEYS = (
     "unresolved_links", "duplicate_ids", "duplicate_titles", "skill_pointers",
-    "raw_source_integrity", "typed_relation_integrity",
+    "raw_source_integrity", "typed_relation_integrity", "redirect_integrity",
 )
 WARNING_KEYS = (
     "metadata_issues", "placement", "moc_coverage", "orphans", "stale",
@@ -1039,6 +1041,37 @@ def typed_relation_findings(
     return errors, missing_inverses
 
 
+def redirect_findings(notes: list[Note]) -> list[dict[str, Any]]:
+    """Require redirects to have one live, non-self target and a superseded status."""
+    by_path, by_stem = note_maps(notes)
+    findings: list[dict[str, Any]] = []
+    redirect_edges: dict[str, set[str]] = defaultdict(set)
+    for note in notes:
+        if str(note.metadata.get("type", "")).strip() != "redirect":
+            continue
+        if str(note.metadata.get("status", "")).strip() != "superseded":
+            findings.append({"path": note.path, "issue": "redirect_status_must_be_superseded"})
+        values = metadata_values(note.metadata.get("redirect_to"))
+        targets = extract_links(values[0]) if len(values) == 1 else []
+        if len(values) != 1 or len(targets) != 1:
+            findings.append({"path": note.path, "issue": "redirect_to_must_be_one_wikilink"})
+            continue
+        resolved = resolve_target(targets[0], by_path, by_stem)
+        if resolved is None:
+            findings.append({"path": note.path, "issue": "redirect_target_missing", "target": targets[0]})
+            continue
+        if resolved.path == note.path:
+            findings.append({"path": note.path, "issue": "redirect_targets_self"})
+            continue
+        if str(resolved.metadata.get("type", "")).strip() == "redirect":
+            findings.append({"path": note.path, "issue": "redirect_chain", "target": resolved.path})
+        redirect_edges[note.path].add(resolved.path)
+
+    for cycle in supersession_cycles(redirect_edges):
+        findings.append({"issue": "redirect_cycle", "paths": cycle})
+    return findings
+
+
 def retrieval_filtered(notes: list[Note], include_templates: bool) -> list[Note]:
     if include_templates:
         return notes
@@ -1267,7 +1300,7 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
 
         # MOC coverage: Link Policy requires every durable note to link up to a MOC.
         if (
-            note_type not in {"moc", "system", ""}
+            note_type not in {"moc", "redirect", "system", ""}
             and not note.path.startswith(MOC_EXEMPT_PREFIXES)
         ):
             resolved, _ = outbound_links(note, by_path, by_stem, assets)
@@ -1311,6 +1344,7 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         }
 
     typed_relation_integrity, typed_relation_inverses = typed_relation_findings(notes)
+    redirect_integrity = redirect_findings(notes)
     findings: dict[str, Any] = {
         "unresolved_links": unresolved,
         "duplicate_ids": duplicate_ids,
@@ -1318,6 +1352,7 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         "skill_pointers": check_skill_pointers(root),
         "raw_source_integrity": raw_source_integrity,
         "typed_relation_integrity": typed_relation_integrity,
+        "redirect_integrity": redirect_integrity,
         "metadata_issues": metadata_missing,
         "placement": placement,
         "moc_coverage": moc_coverage,
@@ -2137,6 +2172,339 @@ def set_frontmatter(text: str, values: dict[str, Any]) -> str:
     return "\n".join(rebuilt)
 
 
+def remove_frontmatter_keys(text: str, keys: set[str]) -> str:
+    """Remove selected top-level keys and their indented continuations."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return text
+    try:
+        end = next(index for index in range(1, len(lines)) if lines[index].strip() == "---")
+    except StopIteration:
+        return text
+    rebuilt = [lines[0]]
+    index = 1
+    while index < end:
+        line = lines[index]
+        stripped = line.strip()
+        key = stripped.split(":", 1)[0].strip() if ":" in stripped and not stripped.startswith("- ") else None
+        index += 1
+        if key not in keys:
+            rebuilt.append(line)
+            continue
+        while index < end and (not lines[index].strip() or lines[index].startswith((" ", "\t"))):
+            index += 1
+    rebuilt.extend(lines[end:])
+    return "\n".join(rebuilt)
+
+
+def replace_note_body(text: str, body: str) -> str:
+    """Replace a note body while preserving its complete frontmatter block."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return body.strip() + "\n"
+    try:
+        end = next(index for index in range(1, len(lines)) if lines[index].strip() == "---")
+    except StopIteration:
+        return body.strip() + "\n"
+    return "\n".join(lines[:end + 1]) + "\n\n" + body.strip() + "\n"
+
+
+def unique_strings(*groups: Iterable[str], exclude: Iterable[str] = ()) -> list[str]:
+    excluded = {value.casefold() for value in exclude}
+    seen: set[str] = set()
+    result: list[str] = []
+    for group in groups:
+        for raw in group:
+            value = str(raw).strip()
+            folded = value.casefold()
+            if value and folded not in excluded and folded not in seen:
+                seen.add(folded)
+                result.append(value)
+    return result
+
+
+def prepare_temp_text(path: Path, text: str) -> Path:
+    """Write and fsync a replacement beside its target; caller owns cleanup/replacement."""
+    with tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", newline="", dir=path.parent,
+        prefix=f".{path.name}.", suffix=".tmp", delete=False,
+    ) as handle:
+        handle.write(text if text.endswith("\n") else text + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        return Path(handle.name)
+
+
+def replace_note_pair(
+    canonical_path: Path,
+    canonical_text: str,
+    retired_path: Path,
+    retired_text: str,
+    canonical_original: str,
+) -> None:
+    """Prepare both replacements before swapping; restore canonical if swap two fails."""
+    canonical_temp: Path | None = None
+    retired_temp: Path | None = None
+    canonical_replaced = False
+    try:
+        canonical_temp = prepare_temp_text(canonical_path, canonical_text)
+        retired_temp = prepare_temp_text(retired_path, retired_text)
+        os.replace(canonical_temp, canonical_path)
+        canonical_replaced = True
+        os.replace(retired_temp, retired_path)
+    except OSError:
+        if canonical_replaced:
+            restore = prepare_temp_text(canonical_path, canonical_original)
+            os.replace(restore, canonical_path)
+        raise
+    finally:
+        for temporary in (canonical_temp, retired_temp):
+            if temporary is not None and temporary.exists():
+                temporary.unlink()
+
+
+MERGE_EXCLUDED_PREFIXES = (
+    RAW_SOURCE_PREFIX, "50-journal/", "80-archive/", "90-system/", "99-attachments/",
+)
+MERGE_EXCLUDED_TYPES = {"moc", "raw-source", "redirect", "review", "journal", "system"}
+REDIRECT_REMOVED_FIELDS = set(RELATION_FIELDS) | {
+    "freshness", "truth_source", "last_verified", "freshness_window_days",
+    "observed", "valid_from", "valid_until",
+}
+
+
+def merge_input_note(root: Path, requested: str, role: str) -> tuple[tuple[Path, str, Note, str] | None, dict[str, Any] | None]:
+    resolved = resolve_vault_path(root, requested)
+    if resolved is None:
+        return None, {"error": "outside_vault", "role": role, "requested": requested}
+    path, relative = resolved
+    if not path.is_file() or path.suffix.casefold() != ".md":
+        return None, {"error": "note_not_found", "role": role, "requested": requested}
+    raw = path.read_text(encoding="utf-8-sig")
+    note = build_note(path, relative, raw, path.stat().st_mtime_ns, path.stat().st_size)
+    note_type = str(note.metadata.get("type", "")).strip()
+    if (
+        relative in ROOT_EXEMPT
+        or "/" not in relative
+        or relative.startswith(MERGE_EXCLUDED_PREFIXES)
+        or note_type in MERGE_EXCLUDED_TYPES
+    ):
+        return None, {"error": "note_not_mergeable", "role": role, "path": relative, "type": note_type}
+    return (path, relative, note, raw), None
+
+
+def build_merge_plan(
+    root: Path,
+    canonical_requested: str,
+    retired_requested: str,
+    merged_body_requested: str,
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    canonical_input, error = merge_input_note(root, canonical_requested, "canonical")
+    if error:
+        return None, error
+    retired_input, error = merge_input_note(root, retired_requested, "retired")
+    if error:
+        return None, error
+    assert canonical_input and retired_input
+    canonical_path, canonical_relative, canonical, canonical_raw = canonical_input
+    retired_path, retired_relative, retired, retired_raw = retired_input
+    if canonical_path == retired_path:
+        return None, {"error": "merge_paths_must_differ", "path": canonical_relative}
+
+    body_resolved = resolve_vault_path(root, merged_body_requested)
+    if body_resolved is None:
+        return None, {"error": "merged_body_outside_vault", "requested": merged_body_requested}
+    body_path, body_relative = body_resolved
+    if not body_path.is_file() or body_path.suffix.casefold() != ".md":
+        return None, {"error": "merged_body_not_found", "requested": merged_body_requested}
+    if body_path in {canonical_path, retired_path}:
+        return None, {"error": "merged_body_must_be_separate", "path": body_relative}
+    merged_raw = body_path.read_text(encoding="utf-8-sig")
+    _, merged_body = parse_frontmatter(merged_raw)
+    title_match = re.search(r"^#\s+(.+?)\s*$", merged_body, re.MULTILINE)
+    if title_match is None or title_match.group(1).strip().casefold() != canonical.title.casefold():
+        return None, {
+            "error": "merged_body_title_mismatch",
+            "expected": canonical.title,
+            "actual": title_match.group(1).strip() if title_match else None,
+        }
+
+    aliases = unique_strings(
+        metadata_values(canonical.metadata.get("aliases")),
+        metadata_values(retired.metadata.get("aliases")),
+        [retired.title],
+        exclude=[canonical.title],
+    )
+    tags = unique_strings(note_tags(canonical.metadata), note_tags(retired.metadata))
+    merged_from = unique_strings(
+        metadata_values(canonical.metadata.get("merged_from")), [retired_relative]
+    )
+    today = date.today().isoformat()
+    canonical_final = replace_note_body(canonical_raw, merged_body)
+    canonical_final = set_frontmatter(canonical_final, {
+        "updated": today,
+        "aliases": aliases,
+        "tags": tags,
+        "merged_from": merged_from,
+    })
+
+    target = canonical_relative.removesuffix(".md")
+    redirect_link = f"[[{target}|{canonical.title}]]"
+    retired_base = remove_frontmatter_keys(retired_raw, REDIRECT_REMOVED_FIELDS)
+    retired_base = set_frontmatter(retired_base, {
+        "type": "redirect",
+        "status": "superseded",
+        "updated": today,
+        # Quote the wikilink so the deliberately small YAML parser does not treat the
+        # outer brackets as an inline list.
+        "redirect_to": f"'{redirect_link}'",
+    })
+    redirect_body = (
+        f"# {retired.title}\n\n"
+        f"> [!note] Redirect\n"
+        f"> Merged into {redirect_link} on {today}. This path remains so existing links do not break.\n"
+    )
+    retired_final = replace_note_body(retired_base, redirect_body)
+
+    ignored_conflicts = {"id", "type", "status", "created", "updated", "aliases", "tags", "merged_from"}
+    metadata_conflicts: list[dict[str, Any]] = []
+    for key in sorted(set(retired.metadata) - ignored_conflicts, key=str.casefold):
+        retired_value = retired.metadata.get(key)
+        canonical_value = canonical.metadata.get(key)
+        if retired_value in (None, "", []):
+            continue
+        if canonical_value != retired_value:
+            metadata_conflicts.append({
+                "key": key,
+                "canonical": canonical_value,
+                "retired": retired_value,
+                "resolution": "canonical_preserved",
+            })
+
+    all_notes = scan_notes(root)
+    by_path, by_stem = note_maps(all_notes)
+
+    def link_identity(target_value: str) -> str:
+        resolved_target = resolve_target(target_value, by_path, by_stem)
+        return (
+            resolved_target.path.casefold()
+            if resolved_target
+            else target_value.removesuffix(".md").casefold()
+        )
+
+    final_links = {link_identity(target) for target in extract_links(canonical_final)}
+    canonical_target = canonical_relative.casefold()
+    links_at_risk = sorted({
+        target for target in retired.links
+        if link_identity(target) != canonical_target and link_identity(target) not in final_links
+    }, key=str.casefold)
+    warnings = bool(metadata_conflicts or links_at_risk)
+    plan_material = {
+        "canonical_path": canonical_relative,
+        "retired_path": retired_relative,
+        "body_path": body_relative,
+        "canonical_before": hashlib.sha256(canonical_raw.encode("utf-8")).hexdigest(),
+        "retired_before": hashlib.sha256(retired_raw.encode("utf-8")).hexdigest(),
+        "body_sha256": hashlib.sha256(merged_raw.encode("utf-8")).hexdigest(),
+        "canonical_after": hashlib.sha256(canonical_final.encode("utf-8")).hexdigest(),
+        "retired_after": hashlib.sha256(retired_final.encode("utf-8")).hexdigest(),
+    }
+    plan_hash = hashlib.sha256(
+        json.dumps(plan_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    return {
+        "dry_run": True,
+        "plan_sha256": plan_hash,
+        "canonical": canonical_relative,
+        "retired": retired_relative,
+        "merged_body": body_relative,
+        "changes": {
+            "canonical_updated": True,
+            "retired_becomes_redirect": True,
+            "retired_deleted": False,
+            "aliases": aliases,
+            "tags": tags,
+            "merged_from": merged_from,
+        },
+        "metadata_conflicts": metadata_conflicts,
+        "links_at_risk": links_at_risk,
+        "warnings_require_acceptance": warnings,
+        "ready_to_apply": not warnings,
+        "_canonical_path": canonical_path,
+        "_retired_path": retired_path,
+        "_canonical_original": canonical_raw,
+        "_retired_original": retired_raw,
+        "_canonical_final": canonical_final,
+        "_retired_final": retired_final,
+    }, None
+
+
+def command_merge(
+    root: Path,
+    canonical_requested: str,
+    retired_requested: str,
+    merged_body_requested: str,
+    apply: bool,
+    plan_confirmation: str | None,
+    accept_warnings: bool,
+    compact: bool,
+) -> int:
+    plan, error = build_merge_plan(root, canonical_requested, retired_requested, merged_body_requested)
+    if error:
+        emit(error, compact)
+        return 2
+    assert plan
+    public = {key: value for key, value in plan.items() if not key.startswith("_")}
+    if not apply:
+        emit(public, compact)
+        return 0
+    if not plan_confirmation:
+        emit({
+            "error": "plan_confirmation_required",
+            "plan_sha256": plan["plan_sha256"],
+            "hint": "Preview first, then rerun with --apply --plan <plan_sha256>.",
+        }, compact)
+        return 2
+    if plan_confirmation != plan["plan_sha256"]:
+        emit({
+            "error": "plan_changed",
+            "expected": plan["plan_sha256"],
+            "provided": plan_confirmation,
+            "hint": "Review the new dry-run plan before applying.",
+        }, compact)
+        return 1
+    if plan["warnings_require_acceptance"] and not accept_warnings:
+        public.update({
+            "error": "merge_warnings_not_accepted",
+            "hint": "Resolve the warnings or rerun with --accept-warnings after explicit review.",
+        })
+        emit(public, compact)
+        return 1
+    if (
+        plan["_canonical_path"].read_text(encoding="utf-8-sig") != plan["_canonical_original"]
+        or plan["_retired_path"].read_text(encoding="utf-8-sig") != plan["_retired_original"]
+    ):
+        emit({
+            "error": "merge_inputs_changed_during_apply",
+            "hint": "Run a new dry-run preview before retrying.",
+        }, compact)
+        return 1
+    try:
+        replace_note_pair(
+            plan["_canonical_path"], plan["_canonical_final"],
+            plan["_retired_path"], plan["_retired_final"],
+            plan["_canonical_original"],
+        )
+    except OSError as exc:
+        emit({"error": "merge_write_failed", "detail": str(exc)}, compact)
+        return 1
+    public["dry_run"] = False
+    public["applied"] = True
+    public["ready_to_apply"] = True
+    emit(public, compact)
+    return 0
+
+
 def find_moc(root: Path, folder: str) -> Path | None:
     directory = root / folder
     if not directory.is_dir():
@@ -2375,6 +2743,17 @@ def build_parser() -> argparse.ArgumentParser:
     source_parser.add_argument("path")
     source_parser.add_argument("--verify", action="store_true", help="Verify without writing")
 
+    merge_parser = sub("merge", "Safely merge one note into another and leave a redirect")
+    merge_parser.add_argument("canonical", help="Note that keeps its identity and path")
+    merge_parser.add_argument("retired", help="Note replaced by a redirect")
+    merge_parser.add_argument("--merged-body", required=True,
+                              help="Separate reviewed Markdown draft inside the vault")
+    merge_parser.add_argument("--apply", action="store_true", help="Write the reviewed plan")
+    merge_parser.add_argument("--plan", default=None,
+                              help="Exact plan_sha256 emitted by the preceding dry run")
+    merge_parser.add_argument("--accept-warnings", action="store_true",
+                              help="Explicitly accept reported metadata conflicts or links at risk")
+
     new_parser = sub("new", "Create a note from its template and link its MOC")
     new_parser.add_argument("--type", dest="note_type", required=True, choices=sorted(TYPE_TEMPLATES))
     new_parser.add_argument("--title", required=True)
@@ -2441,6 +2820,9 @@ def main(argv: list[str] | None = None) -> int:
         return command_touch(root, args.path, args.stamp, args.only_durable, compact)
     if args.command == "source-seal":
         return command_source_seal(root, args.path, args.verify, compact)
+    if args.command == "merge":
+        return command_merge(root, args.canonical, args.retired, args.merged_body,
+                             args.apply, args.plan, args.accept_warnings, compact)
     if args.command == "new":
         return command_new(root, args.note_type, args.title, args.folder, args.tags,
                            args.status, args.link_moc, args.dry_run, compact)

@@ -41,6 +41,9 @@ Windows installation that exposes Python only through its launcher, use `py` ins
   payloads, Journal, System, and Attachments, which is how the edit hook uses it.
 - `... source-seal "30-resources/sources/raw/<note>.md"` — hash the delimited payload and
   change a draft raw source to `status: immutable`. Add `--verify` for a read-only check.
+- `... merge <canonical> <retired> --merged-body <draft>` — dry-run a consolidation and
+  redirect plan. Writing additionally requires `--apply --plan <plan_sha256>`; see
+  [[90-system/Safe Merge Policy|Safe Merge Policy]].
 
 ## Report
 
@@ -54,7 +57,7 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 - `... check` — separates **errors** from **warnings** and exits nonzero only on errors.
   - Errors: unresolved note or attachment links, duplicate ids, duplicate titles, broken
     or drifted skill pointers, changed or structurally invalid sealed raw-source payloads,
-    and malformed typed relations or supersession cycles.
+    malformed typed relations or supersession cycles, and invalid redirects.
   - Warnings: missing frontmatter keys, type/folder placement, notes with no MOC edge,
     orphans, staleness, tag sprawl, raw sources that have not been sealed yet, declared
     freshness problems, and typed relations whose inverse declaration is missing.

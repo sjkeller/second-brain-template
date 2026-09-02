@@ -59,7 +59,8 @@ python3 90-system/automation/vault.py check
 `check` separates errors from warnings and exits nonzero only on errors. Fix broken links,
 duplicate ids or titles, and stale skill pointers first. Placement, MOC-coverage, orphan,
 staleness, and tag warnings are judgement calls — report them, do not silently "fix" them.
-Do not delete or merge notes automatically.
+Do not delete notes automatically. Merge only after explicit user agreement and only with
+the hashed preview/apply workflow in [[90-system/Safe Merge Policy]].
 
 For interrupted multi-session work, update [[90-system/AI Handoff]] with confirmed state
 and the next safe action.

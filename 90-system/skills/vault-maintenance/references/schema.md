@@ -6,7 +6,7 @@ Read this only when creating, moving, or validating notes.
 
 - `id`: stable lowercase kebab-case identifier; never reuse.
 - `type`: one of `moc`, `project`, `area`, `resource`, `source`, `raw-source`, `concept`,
-  `person`, `organization`, `journal`, `review`, `decision`, `note`, or `system`.
+  `person`, `organization`, `journal`, `review`, `decision`, `note`, `redirect`, or `system`.
 - `status`: normally `draft`, `active`, `accepted`, `ready`, `superseded`, or `archived`.
 - `created` and `updated`: ISO `YYYY-MM-DD`.
 - `aliases` and `tags`: optional lists.
@@ -36,9 +36,10 @@ Each type has a home folder, and `check` reports notes that sit outside it:
 | `decision` | `60-decisions` |
 | `system` | `90-system` |
 
-`note` and `moc` are unconstrained: `note` is the catch-all capture type, and a MOC lives
-inside the folder it indexes. Notes under `00-inbox` are exempt because they are not filed
-yet, and notes under `80-archive` keep the type they had when they were archived.
+`note`, `moc`, and `redirect` are unconstrained: `note` is the catch-all capture type, a
+MOC lives inside the folder it indexes, and a redirect must remain at the retired path.
+Notes under `00-inbox` are exempt because they are not filed yet, and notes under
+`80-archive` keep the type they had when they were archived.
 
 Unclear destination → `00-inbox`. Inactive material → `80-archive`. Operating metadata →
 `90-system`.
@@ -66,6 +67,10 @@ Typed relationships use only the flat fields in [[90-system/Link Policy]]: `supe
 `superseded_by`, `depends_on` / `required_by`, `supports` / `supported_by`, and the symmetric
 `contradicts`. Every value is one root-relative wikilink. The checker validates targets,
 self-edges, inverse declarations, and supersession cycles.
+
+A redirect has `status: superseded` and one quoted `redirect_to` wikilink. It retains the
+retired note's path, id, and H1 and is exempt from MOC coverage. Create redirects only via
+[[90-system/Safe Merge Policy]].
 
 ## MOC anchors
 

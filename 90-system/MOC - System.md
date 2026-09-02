@@ -17,6 +17,7 @@ The system layer explains how humans and agents operate this vault.
 - [[90-system/Source Trust Policy|Source Trust Policy]]
 - [[90-system/Freshness Policy|Freshness Policy]]
 - [[90-system/Link Policy|Link Policy]]
+- [[90-system/Safe Merge Policy|Safe Merge Policy]]
 - [[90-system/Retrieval Guide|Retrieval Guide]]
 - [[90-system/Retrieval Evaluation|Retrieval Evaluation]]
 - [[90-system/AI Handoff|AI Handoff]]

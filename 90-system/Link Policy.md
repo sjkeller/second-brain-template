@@ -46,6 +46,14 @@ supports: []
 relations and warns when the inverse declaration is missing. Add both directions when the
 relationship is worth typing; ordinary prose links remain valid and need no inverse field.
 
+## Redirects
+
+A retired path uses `type: redirect`, `status: superseded`, and exactly one quoted
+`redirect_to: '[[root-relative/canonical|Canonical]]'` value. Redirects preserve old
+backlinks; they are not ordinary typed relations and do not need a parent MOC. Create them
+only with the guarded command in [[90-system/Safe Merge Policy|Safe Merge Policy]]. The
+checker rejects missing targets, self-links, chains, and cycles.
+
 ## Link format
 
 Use vault-root paths for machine-authored links: `[[40-knowledge/concepts/Concept Name|Concept Name]]`. This avoids ambiguous filenames while keeping readable display text. Avoid duplicate filenames for canonical notes.

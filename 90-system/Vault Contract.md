@@ -39,6 +39,8 @@ when currentness matters; do not add freshness metadata as empty boilerplate.
 
 - Preserve meaning during moves and renames; let Obsidian update links when possible.
 - Do not bulk-delete orphaned or stale notes automatically.
+- Merge only through the preview-and-confirm workflow in
+  [[90-system/Safe Merge Policy|Safe Merge Policy]]; preserve the retired path as a redirect.
 - Generated indexes may be regenerated; human notes may not be overwritten by generated output.
 - A sealed raw-source payload may not be edited or re-sealed. Restore it from version control
   or create a new superseding capture.
