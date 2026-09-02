@@ -3,7 +3,7 @@ id: agent-orientation
 type: system
 status: active
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 tags:
   - system/agent
 ---
@@ -40,6 +40,12 @@ frontmatter, link resolution, open tasks, staleness, and tag inventory are all d
 - Create notes with `vault.py new`, which applies the right
   [[90-system/templates/MOC - Templates|template]] and preserves the stable frontmatter keys.
 - Prefer one durable subject per note. Keep prose readable for humans.
+- Put the current answer or status near the top and follow the stable, type-specific
+  headings in [[90-system/Writing and Documentation Guide|Writing and Documentation Guide]].
+  Reuse maintained sections with heading embeds instead of copying them.
+- Mark material unreviewed AI prose according to
+  [[90-system/AI Collaboration Policy|AI Collaboration Policy]]. Never make an AI draft
+  look like accepted human-authored knowledge.
 - Create explicit semantic edges according to [[90-system/Link Policy|Link Policy]].
 - Use [[90-system/Freshness Policy|Freshness Policy]] for facts that can become stale; do
   not infer freshness from the note's `updated` date.

@@ -6,6 +6,7 @@ created: "{{date:YYYY-MM-DD}}"
 updated: "{{date:YYYY-MM-DD}}"
 aliases: []
 tags: []
+review_on:
 depends_on: []
 required_by: []
 ---
@@ -13,6 +14,9 @@ required_by: []
 # {{title}}
 
 Parent: [[10-projects/MOC - Projects|Projects]]
+
+> [!abstract] Current status
+> State what is true now, the main blocker if any, and the next meaningful change.
 
 ## Outcome
 
@@ -22,9 +26,11 @@ Define the concrete result and finish condition.
 
 Explain the value, deadline, or trigger.
 
-## Next action
+## Next actions
 
 - [ ]
+
+## Waiting for
 
 ## Constraints and risks
 
@@ -34,6 +40,10 @@ Explain the value, deadline, or trigger.
 - Knowledge:
 - Sources:
 - Decisions:
+
+## Context
+
+![[90-system/bases/Context.base#Linked notes]]
 
 ## Completion
 

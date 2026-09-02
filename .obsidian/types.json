@@ -4,6 +4,8 @@
     "cssclasses": "multitext",
     "tags": "tags",
     "created": "date",
+    "review_on": "date",
+    "ai_review": "text",
     "id": "text",
     "status": "text",
     "type": "text",

@@ -19,7 +19,10 @@ contradicts: []
 
 Parent: [[40-knowledge/concepts/MOC - Concepts|Concepts]]
 
-## Claim
+> [!abstract] Summary
+> State the reusable idea in one to three sentences.
+
+## Explanation
 
 Explain one reusable idea in your own words.
 
@@ -37,3 +40,7 @@ Explain one reusable idea in your own words.
 - Contrasts with:
 
 ## Open questions
+
+## My synthesis
+
+Leave this for the user's own interpretation unless they explicitly request a draft.

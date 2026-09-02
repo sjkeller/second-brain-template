@@ -9,6 +9,8 @@ properties:
     displayName: Status
   updated:
     displayName: Updated
+  review_on:
+    displayName: Review on
 views:
   - type: table
     name: "Active"
@@ -19,6 +21,7 @@ views:
       - file.name
       - type
       - status
+      - review_on
       - updated
   - type: table
     name: "Everything here"
@@ -26,4 +29,5 @@ views:
       - file.name
       - type
       - status
+      - review_on
       - updated

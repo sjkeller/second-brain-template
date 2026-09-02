@@ -3,7 +3,7 @@ id: vault-contract
 type: system
 status: active
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 tags:
   - system/agent
 ---
@@ -49,5 +49,21 @@ when currentness matters; do not add freshness metadata as empty boilerplate.
 ## Stable frontmatter
 
 Core keys are `id`, `type`, `status`, `created`, `updated`, optional `aliases`, and optional `tags`. Use ISO dates. Keep values atomic and machine-readable.
+
+Optional properties must have an operational consumer. `review_on` powers review views;
+`ai_review: pending` exposes unreviewed AI material. Remove `ai_review` together with its
+warning callout after human review. Do not mirror a prose summary into frontmatter merely
+for an agent.
+
+## Human-readable body
+
+- Use a specific H1 and put the current answer, decision, takeaway, or status near the top.
+- Keep the body as canonical human-readable Markdown. Machine-oriented representations are
+  generated context, not a replacement for the note.
+- Prefer stable headings and heading embeds over copied status or summary text.
+- Separate evidence, interpretation, decisions, and open questions visibly.
+- Use [[90-system/Writing and Documentation Guide|Writing and Documentation Guide]] for the
+  note contract and [[90-system/AI Collaboration Policy|AI Collaboration Policy]] for
+  reviewable AI contributions.
 
 See [[90-system/Link Policy|Link Policy]], [[90-system/templates/MOC - Templates|Templates]], and [[90-system/Retrieval Guide|Retrieval Guide]].

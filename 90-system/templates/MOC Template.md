@@ -11,8 +11,8 @@ tags:
 
 # {{title}}
 
-State what this map covers and what belongs in it. A MOC is a curated hub, not an
-automatic list: say why these notes belong together.
+State what this map covers, what belongs in it, and where a reader should start. A MOC is
+a curated navigation page, not an unexplained link dump.
 
 ## Notes
 

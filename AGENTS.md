@@ -46,6 +46,13 @@ canonical note on external evidence requires a proposed diff and explicit user c
   frontmatter when this command covers the case.
 - Preserve user-authored meaning, provenance, dates, and unresolved uncertainty.
   Never invent personal facts, citations, or completion status.
+- Follow `90-system/Writing and Documentation Guide.md`: put the current answer or status
+  near the top, keep metadata small, and use the type-specific stable headings. Do not
+  duplicate a maintained section when a heading embed can reuse it.
+- If material AI-authored prose remains in a durable note, follow
+  `90-system/AI Collaboration Policy.md`: mark it with `ai_review: pending` and the visible
+  AI-draft callout until a human reviews it. Evidence and uncertainty matter more than a
+  persuasive model rationale.
 - Apply `90-system/Freshness Policy.md` to claims whose currentness matters. Use a dated
   snapshot or a verified truth pointer; `updated` alone does not verify a claim.
 - Link with vault-root wikilinks: `[[40-knowledge/concepts/Concept Name|Concept Name]]`.
