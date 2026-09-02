@@ -20,3 +20,9 @@ __pycache__/
 90-system/indexes/.vault-cache.sqlite3
 90-system/indexes/.vault-cache.sqlite3-wal
 90-system/indexes/.vault-cache.sqlite3-shm
+
+# Private retrieval judgments and generated evaluation reports. The fictional example is
+# versioned so the schema remains discoverable without publishing personal queries.
+90-system/evals/*.jsonl
+90-system/evals/*.json
+!90-system/evals/*.example.jsonl

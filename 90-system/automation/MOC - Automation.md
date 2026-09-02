@@ -29,6 +29,8 @@ Windows installation that exposes Python only through its launcher, use `py` ins
   reports the estimate.
 - `python3 90-system/automation/vault.py related "path.md" --depth 2` — resolved wikilink
   neighbours.
+- `... eval-retrieval` — run the production ranker against the ignored private JSONL case
+  set and report recall@k plus MRR. See [[90-system/Retrieval Evaluation|Retrieval Evaluation]].
 
 ## Author
 
@@ -86,6 +88,7 @@ queries on the actual Windows and Linux vault before tuning these choices.
 
 These commands are local preprocessing. They do not call an AI service or transmit vault
 content. The disposable cache remains out of version control because it is generated local
-state, not because it contains full note bodies.
+state, not because it contains full note bodies. Retrieval cases and reports are also
+ignored because their queries and relevance judgments can disclose private interests.
 
-Related: [[90-system/Retrieval Guide|Retrieval Guide]] · [[90-system/skills/MOC - Skills|Skills]] · [[90-system/bases/MOC - Bases|Bases]] · [[90-system/MOC - System|System]]
+Related: [[90-system/Retrieval Guide|Retrieval Guide]] · [[90-system/Retrieval Evaluation|Retrieval Evaluation]] · [[90-system/skills/MOC - Skills|Skills]] · [[90-system/bases/MOC - Bases|Bases]] · [[90-system/MOC - System|System]]

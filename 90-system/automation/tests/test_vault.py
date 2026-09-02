@@ -325,6 +325,133 @@ class RankingTests(VaultFixture):
         self.assertTrue(any("/templates/" in n.path for _, n in self.rank("claim", include_templates=True)))
 
 
+class RetrievalEvaluationTests(VaultFixture):
+    def write_cases(self, rows):
+        return self.write(
+            "90-system/evals/retrieval-cases.jsonl",
+            "".join(json.dumps(row) + "\n" for row in rows),
+        )
+
+    def test_evaluates_production_ranker_and_categories(self):
+        self.write_cases([
+            {
+                "id": "find-retrieval",
+                "query": "retrieval",
+                "expected": "40-knowledge/concepts/Retrieval.md",
+                "category": "known-item",
+            },
+            {
+                "id": "find-project",
+                "query": "build search",
+                "expected": ["10-projects/Build Search.md"],
+                "type": "project",
+                "tags": [],
+            },
+        ])
+        code, payload = run(
+            vault.command_eval_retrieval,
+            self.root,
+            "90-system/evals/retrieval-cases.jsonl",
+            (1, 3, 5),
+            False,
+            None,
+            None,
+            True,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["engine"], "lexical-bm25f")
+        self.assertEqual(payload["metrics"]["case_count"], 2)
+        self.assertEqual(payload["metrics"]["recall_at_k"]["1"], 1.0)
+        self.assertEqual(payload["metrics"]["mrr"], 1.0)
+        self.assertEqual(payload["categories"]["known-item"]["case_count"], 1)
+        self.assertNotIn("query", payload["results"][0])
+
+    def test_multiple_expected_notes_use_macro_recall(self):
+        self.write_cases([{
+            "query": "retrieval",
+            "expected": [
+                "40-knowledge/concepts/Retrieval.md",
+                "10-projects/Build Search.md",
+            ],
+        }])
+        cases, errors, _ = vault.load_retrieval_cases(
+            self.root, "90-system/evals/retrieval-cases.jsonl"
+        )
+        self.assertEqual(errors, [])
+        cache = vault.VaultCache(self.root, self.root / "eval.sqlite3")
+        cache.sync()
+        try:
+            results, metrics, _ = vault.evaluate_retrieval(cache, cases, (1, 3), False)
+        finally:
+            cache.close()
+        self.assertEqual(results[0]["recall_at_k"]["1"], 0.5)
+        self.assertEqual(metrics["recall_at_k"]["3"], 1.0)
+
+    def test_report_is_written_inside_vault(self):
+        self.write_cases([{
+            "query": "retrieval",
+            "expected": "40-knowledge/concepts/Retrieval.md",
+        }])
+        code, payload = run(
+            vault.command_eval_retrieval,
+            self.root,
+            "90-system/evals/retrieval-cases.jsonl",
+            (1,),
+            False,
+            "90-system/evals/retrieval-report.json",
+            1.0,
+            True,
+        )
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["threshold"]["passed"])
+        report = json.loads(
+            (self.root / "90-system/evals/retrieval-report.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(report["metrics"]["mrr"], 1.0)
+
+    def test_bad_cases_fail_without_running(self):
+        self.write_cases([
+            {"id": "bad", "query": "", "expected": "Missing.md"},
+            {"id": "escape", "query": "x", "expected": "../outside.md"},
+        ])
+        code, payload = run(
+            vault.command_eval_retrieval,
+            self.root,
+            "90-system/evals/retrieval-cases.jsonl",
+            (1,),
+            False,
+            None,
+            None,
+            True,
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "invalid_retrieval_cases")
+        self.assertEqual(len(payload["details"]), 2)
+
+    def test_threshold_can_fail_ci(self):
+        self.write_cases([{
+            "query": "unmatched vocabulary",
+            "expected": "40-knowledge/concepts/Retrieval.md",
+        }])
+        code, payload = run(
+            vault.command_eval_retrieval,
+            self.root,
+            "90-system/evals/retrieval-cases.jsonl",
+            (5,),
+            False,
+            None,
+            0.5,
+            True,
+        )
+        self.assertEqual(code, 1)
+        self.assertFalse(payload["threshold"]["passed"])
+
+    def test_k_list_validates_positive_integers(self):
+        self.assertEqual(vault.k_list("5,1,5"), (1, 5))
+        with self.assertRaises(Exception):
+            vault.k_list("0,3")
+
+
 class GraphTests(VaultFixture):
     def test_resolution_and_adjacency(self):
         notes = vault.scan_notes(self.root)

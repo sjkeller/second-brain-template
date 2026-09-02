@@ -1,0 +1,2 @@
+{"id":"known-link-policy","query":"how are note relationships checked","expected":"90-system/Link Policy.md","category":"known-item"}
+{"id":"filtered-system-note","query":"retrieval narrows context","expected":["90-system/Retrieval Guide.md"],"type":"system","tags":["system/agent"],"category":"filtered"}

@@ -66,6 +66,9 @@ RETRIEVAL_EXCLUDED = ("90-system/templates/", "90-system/skills/_template/", "90
 GENERATED_MARKDOWN = "90-system/indexes/Vault Index.md"
 GENERATED_JSON = "90-system/indexes/vault-index.json"
 CACHE_RELATIVE = "90-system/indexes/.vault-cache.sqlite3"
+RETRIEVAL_CASES_RELATIVE = "90-system/evals/retrieval-cases.jsonl"
+RETRIEVAL_REPORT_RELATIVE = "90-system/evals/retrieval-report.json"
+RETRIEVAL_EVAL_SCHEMA_VERSION = 1
 
 KNOWN_TYPES = (
     "moc", "project", "area", "resource", "source", "raw-source", "concept", "person",
@@ -1493,6 +1496,225 @@ def command_query(root: Path, query: str, options: QueryOptions, compact: bool) 
 
 
 # ---------------------------------------------------------------------------
+# retrieval evaluation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class RetrievalCase:
+    case_id: str
+    query: str
+    expected: tuple[str, ...]
+    types: tuple[str, ...] = ()
+    tags: tuple[str, ...] = ()
+    category: str = "default"
+
+
+def string_tuple(value: Any) -> tuple[str, ...] | None:
+    """Normalise a string or JSON string array without silently coercing other types."""
+    if isinstance(value, str):
+        values = (value.strip(),)
+    elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+        values = tuple(item.strip() for item in value)
+    else:
+        return None
+    return tuple(item for item in values if item)
+
+
+def load_retrieval_cases(root: Path, requested: str) -> tuple[list[RetrievalCase], list[dict[str, Any]], str | None]:
+    """Load private JSONL judgments, validating all referenced notes inside the vault."""
+    resolved = resolve_vault_path(root, requested)
+    if resolved is None:
+        return [], [{"error": "outside_vault", "requested": requested}], None
+    path, relative = resolved
+    if not path.is_file():
+        return [], [{"error": "cases_not_found", "path": relative}], relative
+
+    cases: list[RetrievalCase] = []
+    errors: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8-sig").splitlines(), start=1):
+        if not raw_line.strip():
+            continue
+        try:
+            item = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            errors.append({"line": line_number, "error": "invalid_json", "detail": exc.msg})
+            continue
+        if not isinstance(item, dict):
+            errors.append({"line": line_number, "error": "case_must_be_object"})
+            continue
+
+        query = item.get("query")
+        expected_values = string_tuple(item.get("expected"))
+        types = string_tuple(item.get("type", []))
+        tags = string_tuple(item.get("tags", []))
+        case_id = str(item.get("id", f"line-{line_number}")).strip()
+        category = str(item.get("category", "default")).strip() or "default"
+        if not isinstance(query, str) or not query.strip():
+            errors.append({"line": line_number, "error": "query_required"})
+            continue
+        if not expected_values:
+            errors.append({"line": line_number, "error": "expected_required"})
+            continue
+        if types is None or tags is None:
+            errors.append({"line": line_number, "error": "filters_must_be_strings"})
+            continue
+        if not case_id or case_id in seen_ids:
+            errors.append({"line": line_number, "error": "case_id_missing_or_duplicate", "id": case_id})
+            continue
+
+        expected_paths: list[str] = []
+        invalid_expected = False
+        for expected in expected_values:
+            expected_resolved = resolve_vault_path(root, expected)
+            if expected_resolved is None:
+                errors.append({"line": line_number, "error": "expected_outside_vault", "expected": expected})
+                invalid_expected = True
+                continue
+            expected_path, expected_relative = expected_resolved
+            if not expected_path.is_file() or expected_path.suffix.casefold() != ".md":
+                errors.append({"line": line_number, "error": "expected_note_not_found", "expected": expected_relative})
+                invalid_expected = True
+                continue
+            if expected_relative.startswith(RETRIEVAL_EXCLUDED):
+                errors.append({"line": line_number, "error": "expected_note_excluded", "expected": expected_relative})
+                invalid_expected = True
+                continue
+            expected_paths.append(expected_relative)
+        if invalid_expected:
+            continue
+
+        seen_ids.add(case_id)
+        cases.append(RetrievalCase(
+            case_id=case_id,
+            query=query.strip(),
+            expected=tuple(dict.fromkeys(expected_paths)),
+            types=types,
+            tags=tags,
+            category=category,
+        ))
+    if not cases and not errors:
+        errors.append({"error": "no_cases", "path": relative})
+    return cases, errors, relative
+
+
+def retrieval_metrics(case_results: list[dict[str, Any]], k_values: tuple[int, ...]) -> dict[str, Any]:
+    """Calculate macro recall@k and MRR from already-ranked case results."""
+    count = len(case_results)
+    recall_at_k = {
+        str(k): round(sum(result["recall_at_k"][str(k)] for result in case_results) / count, 6)
+        if count else 0.0
+        for k in k_values
+    }
+    reciprocal_ranks = [
+        1.0 / result["first_relevant_rank"] if result["first_relevant_rank"] else 0.0
+        for result in case_results
+    ]
+    return {
+        "case_count": count,
+        "recall_at_k": recall_at_k,
+        "mrr": round(sum(reciprocal_ranks) / count, 6) if count else 0.0,
+    }
+
+
+def evaluate_retrieval(
+    cache: VaultCache,
+    cases: list[RetrievalCase],
+    k_values: tuple[int, ...],
+    fuzzy: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any], dict[str, Any]]:
+    """Evaluate the production lexical ranker; no parallel scoring implementation."""
+    case_results: list[dict[str, Any]] = []
+    max_k = max(k_values)
+    for case in cases:
+        ranked = rank(cache, case.query, QueryOptions(
+            limit=max_k,
+            types=case.types,
+            tags=case.tags,
+            fuzzy=fuzzy,
+            excerpt_chars=0,
+        ))
+        paths = [note.path for _, note in ranked]
+        expected = set(case.expected)
+        relevant_ranks = [index for index, path in enumerate(paths, start=1) if path in expected]
+        recall = {
+            str(k): round(sum(path in expected for path in paths[:k]) / len(expected), 6)
+            for k in k_values
+        }
+        case_results.append({
+            "id": case.case_id,
+            "category": case.category,
+            "expected": list(case.expected),
+            "first_relevant_rank": min(relevant_ranks) if relevant_ranks else None,
+            "recall_at_k": recall,
+            "top_paths": paths,
+        })
+
+    overall = retrieval_metrics(case_results, k_values)
+    by_category: dict[str, Any] = {}
+    for category in sorted({case.category for case in cases}, key=str.casefold):
+        members = [result for result in case_results if result["category"] == category]
+        by_category[category] = retrieval_metrics(members, k_values)
+    return case_results, overall, by_category
+
+
+def command_eval_retrieval(
+    root: Path,
+    requested_cases: str,
+    k_values: tuple[int, ...],
+    fuzzy: bool,
+    report_path: str | None,
+    fail_below_recall: float | None,
+    compact: bool,
+) -> int:
+    cases, errors, cases_relative = load_retrieval_cases(root, requested_cases)
+    if errors:
+        emit({"error": "invalid_retrieval_cases", "cases": cases_relative, "details": errors}, compact)
+        return 2
+    if fail_below_recall is not None and not 0.0 <= fail_below_recall <= 1.0:
+        emit({"error": "invalid_recall_threshold", "value": fail_below_recall}, compact)
+        return 2
+
+    cache = open_cache(root)
+    try:
+        case_results, metrics, categories = evaluate_retrieval(cache, cases, k_values, fuzzy)
+    finally:
+        cache.close()
+    payload: dict[str, Any] = {
+        "schema_version": RETRIEVAL_EVAL_SCHEMA_VERSION,
+        "engine": "lexical-bm25f",
+        "generated_on": date.today().isoformat(),
+        "cases": cases_relative,
+        "k": list(k_values),
+        "fuzzy": fuzzy,
+        "metrics": metrics,
+        "categories": categories,
+        "results": case_results,
+    }
+
+    if report_path:
+        report_resolved = resolve_vault_path(root, report_path)
+        if report_resolved is None:
+            emit({"error": "report_outside_vault", "requested": report_path}, compact)
+            return 2
+        destination, report_relative = report_resolved
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        payload["report"] = report_relative
+
+    evaluated_k = max(k_values)
+    passed = fail_below_recall is None or metrics["recall_at_k"][str(evaluated_k)] >= fail_below_recall
+    payload["threshold"] = {
+        "k": evaluated_k,
+        "minimum_recall": fail_below_recall,
+        "passed": passed,
+    }
+    emit(payload, compact)
+    return 0 if passed else 1
+
+
+# ---------------------------------------------------------------------------
 # pack
 # ---------------------------------------------------------------------------
 
@@ -2070,6 +2292,16 @@ def csv_list(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def k_list(value: str) -> tuple[int, ...]:
+    try:
+        values = tuple(sorted({int(part.strip()) for part in value.split(",") if part.strip()}))
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("k values must be comma-separated positive integers") from exc
+    if not values or any(item <= 0 for item in values):
+        raise argparse.ArgumentTypeError("k values must be comma-separated positive integers")
+    return values
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deterministic vault tooling.")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -2099,6 +2331,17 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--include-templates", action="store_true")
     query_parser.add_argument("--excerpt-chars", type=int, default=None,
                               help="Excerpt length (default 320, or 160 with --compact)")
+
+    eval_parser = sub("eval-retrieval", "Evaluate BM25F against private JSONL judgments")
+    eval_parser.add_argument("--cases", default=RETRIEVAL_CASES_RELATIVE,
+                             help=f"JSONL cases inside the vault (default: {RETRIEVAL_CASES_RELATIVE})")
+    eval_parser.add_argument("--k", dest="k_values", type=k_list, default=(1, 3, 5, 10),
+                             help="Comma-separated recall cutoffs (default: 1,3,5,10)")
+    eval_parser.add_argument("--fuzzy", action="store_true", help="Evaluate typo-tolerant ranking")
+    eval_parser.add_argument("--report", default=None,
+                             help=f"Write a JSON report inside the vault (suggested: {RETRIEVAL_REPORT_RELATIVE})")
+    eval_parser.add_argument("--fail-below-recall", type=float, default=None,
+                             help="Exit 1 when recall at the largest k is below this 0..1 value")
 
     pack_parser = sub("pack", "Token-budgeted Markdown context bundle")
     pack_parser.add_argument("terms")
@@ -2175,6 +2418,9 @@ def main(argv: list[str] | None = None) -> int:
                               else (COMPACT_EXCERPT_CHARS if compact else DEFAULT_EXCERPT_CHARS)),
         )
         return command_query(root, args.terms, options, compact)
+    if args.command == "eval-retrieval":
+        return command_eval_retrieval(root, args.cases, args.k_values, args.fuzzy,
+                                      args.report, args.fail_below_recall, compact)
     if args.command == "pack":
         options = QueryOptions(
             limit=max(1, args.limit),

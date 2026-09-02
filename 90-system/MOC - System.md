@@ -18,6 +18,7 @@ The system layer explains how humans and agents operate this vault.
 - [[90-system/Freshness Policy|Freshness Policy]]
 - [[90-system/Link Policy|Link Policy]]
 - [[90-system/Retrieval Guide|Retrieval Guide]]
+- [[90-system/Retrieval Evaluation|Retrieval Evaluation]]
 - [[90-system/AI Handoff|AI Handoff]]
 - [[90-system/Design Rationale|Design Rationale]]
 - [[90-system/Obsidian Setup|Obsidian Setup]]

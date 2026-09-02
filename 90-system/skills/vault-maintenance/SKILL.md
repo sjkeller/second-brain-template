@@ -24,6 +24,10 @@ python3 90-system/automation/vault.py related "<path>.md" --depth 2
 `pack` returns one token-budgeted bundle instead of several reads. See
 [[90-system/Retrieval Guide]] for when to use which.
 
+When changing retrieval behavior, use the ignored human-judged cases described in
+[[90-system/Retrieval Evaluation]] and run `vault.py eval-retrieval`. Do not recommend or
+enable semantic retrieval from anecdotes; apply the documented evidence gate.
+
 ## Maintain existing notes
 
 Preserve meaning and provenance when repairing links, metadata, or MOC membership. Read
