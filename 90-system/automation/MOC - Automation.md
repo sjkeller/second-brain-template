@@ -36,6 +36,11 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 - `... obsidian-uri --file "path.md"` or `--search "terms"` — print a percent-encoded,
   non-mutating Obsidian URI. It never launches the application or exposes write actions.
 
+The local `mcp_server.py` exposes the same retrieval primitives to user-scoped Claude Code
+and Codex sessions without adding a second index or sending text to a remote embedding
+service. It also provides two narrowly additive capture tools. Configuration, tool policy,
+and compatibility details are in [[90-system/MCP Integration|MCP Integration]].
+
 ## Author
 
 - `... new --type concept --title "Name" --tags "a,b"` — renders the template, generates
@@ -79,6 +84,8 @@ wikilinks, headings, or checkbox tasks to structural reports. Only metadata and 
 outside the untrusted payload boundary can do that.
 - `... cache` / `cache --rebuild` — inspect or discard the retrieval cache.
 - `python3 -m unittest discover -s 90-system/automation/tests` — the test suite.
+- `mcp_hook.py --vault-root <vault>` — shared non-blocking Claude/Codex MCP audit hook;
+  it reads one hook JSON object from stdin and never logs tool arguments or results.
 
 ## How retrieval stays fast
 

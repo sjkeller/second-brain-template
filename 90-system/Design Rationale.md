@@ -91,6 +91,19 @@ The template's fictional examples do not meet that gate, so no semantic engine o
 dependency is installed. Lexical retrieval remains the fallback that always works and
 always explains itself.
 
+## Why MCP stays a thin local adapter
+
+[[90-system/MCP Integration|MCP Integration]] reuses `vault.py` instead of building a
+second retrieval or storage layer. One local stdio process can serve Claude Code and Codex
+from every project, but it is fixed to one resolved vault root and has no network client.
+Read tools are broad enough for retrieval; writes are limited to new reviewable Inbox notes
+and new sealed raw sources. Existing-note mutation remains a deliberate maintenance task.
+
+Safety invariants live in the server because project-local hooks do not follow a
+user-scoped MCP server into unrelated projects. Hooks are therefore narrow, privacy-safe
+capture audits rather than a correctness dependency. This keeps the same behavior when a
+client skips hooks, changes permission mode, or adopts the newer stateless MCP lifecycle.
+
 ## Research basis
 
 - Obsidian Help: https://obsidian.md/help/plugins/graph
@@ -108,6 +121,8 @@ always explains itself.
 - Claude Code memory and `@` imports: https://code.claude.com/docs/en/memory
 - Claude Code skills: https://code.claude.com/docs/en/skills
 - OpenAI skill guidance: https://learn.chatgpt.com/docs/build-skills
+- Codex MCP: https://learn.chatgpt.com/docs/extend/mcp?surface=cli
+- Model Context Protocol tools: https://modelcontextprotocol.io/specification/2026-07-28/server/tools
 - Robertson & Zaragoza, *The Probabilistic Relevance Framework: BM25 and Beyond* (2009),
   for the fielded ranking used by `query`.
 - Amershi et al., *Guidelines for Human-AI Interaction* (2019):

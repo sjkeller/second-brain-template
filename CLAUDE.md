@@ -9,6 +9,10 @@ is specific to this runtime.
   `updated:` after you edit a note, and warns about unresolved links. It skips `50-journal`,
   `90-system`, and `99-attachments`. Do not also stamp `updated:` by hand — you would be
   duplicating it.
+- MCP `PreToolUse`, `PostToolUse`, and `PostToolUseFailure` hooks call
+  `90-system/automation/mcp_hook.py`. They audit only event and tool names. They do not
+  enforce note safety; `mcp_server.py` does that even when the vault is reached from a
+  different project whose local settings are not loaded.
 - `.claude/settings.json` pre-approves the `vault.py` commands. Invoke the script exactly
   as written in the shared instructions so the allow rules match. Both files need the
   folder to be trusted once before their rules and hooks take effect.

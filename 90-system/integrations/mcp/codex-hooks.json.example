@@ -1,0 +1,44 @@
+{
+  "description": "Merge these entries into ~/.codex/hooks.json after replacing __VAULT_ROOT__.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"__VAULT_ROOT__/90-system/automation/mcp_hook.py\" --vault-root \"__VAULT_ROOT__\"",
+            "commandWindows": "python3 \"__VAULT_ROOT__/90-system/automation/mcp_hook.py\" --vault-root \"__VAULT_ROOT__\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"__VAULT_ROOT__/90-system/automation/mcp_hook.py\" --vault-root \"__VAULT_ROOT__\"",
+            "commandWindows": "python3 \"__VAULT_ROOT__/90-system/automation/mcp_hook.py\" --vault-root \"__VAULT_ROOT__\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"__VAULT_ROOT__/90-system/automation/mcp_hook.py\" --vault-root \"__VAULT_ROOT__\"",
+            "commandWindows": "python3 \"__VAULT_ROOT__/90-system/automation/mcp_hook.py\" --vault-root \"__VAULT_ROOT__\"",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

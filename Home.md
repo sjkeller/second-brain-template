@@ -49,6 +49,7 @@ links.
 - [[90-system/Vault Contract|Vault Contract]]
 - [[90-system/Link Policy|Link Policy]]
 - [[90-system/Retrieval Guide|Retrieval Guide]]
+- [[90-system/MCP Integration|MCP Integration]] — local access from Claude Code and Codex.
 - [[90-system/automation/MOC - Automation|Automation]] — the deterministic commands.
 - [[90-system/bases/MOC - Bases|Bases]] — property dashboards for humans.
 - [[90-system/MOC - System|System map]]

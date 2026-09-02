@@ -110,4 +110,10 @@ hook that stamps `updated:` and reports unresolved links after an edit. It invok
 trust this folder once before either takes effect; until then you will still see permission
 prompts and the hook will not run.
 
+For one private vault shared across unrelated Claude Code and Codex projects, use the local
+stdio server and user-scoped hook setup in [[90-system/MCP Integration|MCP Integration]].
+That integration reads and writes the same Markdown files Obsidian sees; it does not add a
+parallel knowledge store. Configure it only after this template has been synchronised into
+the private vault.
+
 Related: [[90-system/Link Policy|Link Policy]] · [[90-system/Design Rationale|Design Rationale]] · [[Home]]

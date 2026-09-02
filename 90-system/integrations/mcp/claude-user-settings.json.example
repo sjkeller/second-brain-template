@@ -1,0 +1,64 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__second-brain__search_vault",
+      "mcp__second-brain__build_context_pack",
+      "mcp__second-brain__related_notes",
+      "mcp__second-brain__read_note",
+      "mcp__second-brain__vault_status"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "__VAULT_ROOT__/90-system/automation/mcp_hook.py",
+              "--vault-root",
+              "__VAULT_ROOT__"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "__VAULT_ROOT__/90-system/automation/mcp_hook.py",
+              "--vault-root",
+              "__VAULT_ROOT__"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "__VAULT_ROOT__/90-system/automation/mcp_hook.py",
+              "--vault-root",
+              "__VAULT_ROOT__"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

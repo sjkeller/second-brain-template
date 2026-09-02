@@ -15,10 +15,32 @@
       "PowerShell(python3 90-system/automation/vault.py *)",
       "PowerShell(python3 \"90-system/automation/vault.py\" *)",
       "Bash(py -m unittest discover -s 90-system/automation/tests *)",
-      "Bash(python3 -m unittest discover -s 90-system/automation/tests *)"
+      "Bash(python3 -m unittest discover -s 90-system/automation/tests *)",
+      "mcp__second-brain__search_vault",
+      "mcp__second-brain__build_context_pack",
+      "mcp__second-brain__related_notes",
+      "mcp__second-brain__read_note",
+      "mcp__second-brain__vault_status"
     ]
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/90-system/automation/mcp_hook.py",
+              "--vault-root",
+              "${CLAUDE_PROJECT_DIR}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "Write|Edit",
@@ -31,6 +53,38 @@
             ],
             "timeout": 30,
             "statusMessage": "Stamping and checking the vault..."
+          }
+        ]
+      },
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/90-system/automation/mcp_hook.py",
+              "--vault-root",
+              "${CLAUDE_PROJECT_DIR}"
+            ],
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3",
+            "args": [
+              "${CLAUDE_PROJECT_DIR}/90-system/automation/mcp_hook.py",
+              "--vault-root",
+              "${CLAUDE_PROJECT_DIR}"
+            ],
+            "timeout": 5
           }
         ]
       }

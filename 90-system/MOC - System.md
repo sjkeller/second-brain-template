@@ -22,6 +22,7 @@ they need.
 
 ## How-to guides
 
+- [[90-system/MCP Integration|MCP Integration]]
 - [[90-system/Obsidian Integration|Obsidian Integration]]
 - [[90-system/Human Usability Evaluation|Human Usability Evaluation]]
 - [[90-system/Retrieval Guide|Retrieval Guide]]
