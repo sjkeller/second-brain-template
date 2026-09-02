@@ -22,6 +22,25 @@ AUDIT_RELATIVE = Path("90-system/indexes/mcp-audit.jsonl")
 ALLOWED_EVENTS = {"PreToolUse", "PostToolUse", "PostToolUseFailure"}
 
 
+class NonExitingArgumentParser(argparse.ArgumentParser):
+    """Turn argparse failures into ordinary exceptions for a non-blocking hook."""
+
+    def error(self, message: str) -> None:
+        raise ValueError(message)
+
+
+def validate_root(value: object) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        root = Path(value).expanduser().resolve(strict=True)
+    except (OSError, RuntimeError):
+        return None
+    if not root.is_dir() or not (root / "Home.md").is_file():
+        return None
+    return root
+
+
 def event_record(payload: Any) -> dict[str, str] | None:
     if not isinstance(payload, dict):
         return None
@@ -45,14 +64,17 @@ def append_record(root: Path, record: dict[str, str]) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(add_help=False)
+    parser = NonExitingArgumentParser(add_help=False)
     parser.add_argument("--vault-root", required=True)
     try:
         args = parser.parse_args(argv)
+        root = validate_root(args.vault_root)
+        if root is None:
+            return 0
         payload = json.load(sys.stdin)
         record = event_record(payload)
         if record is not None:
-            append_record(Path(args.vault_root).expanduser().resolve(), record)
+            append_record(root, record)
     except Exception:  # A defense-in-depth audit hook must never block an MCP call.
         return 0
     return 0

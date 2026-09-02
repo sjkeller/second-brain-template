@@ -3,7 +3,7 @@ id: freshness-policy
 type: system
 status: active
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-03
 tags:
   - system/provenance
   - system/quality
@@ -28,7 +28,8 @@ Declare freshness only when it adds information; ordinary durable notes need no 
 ```yaml
 freshness: timeless | snapshot | pointer
 observed: YYYY-MM-DD             # required for an explicit snapshot
-truth_source: https://...        # required for a pointer; a wikilink is also valid
+truth_source: https://...        # required for a pointer
+# Or use a quoted Wikilink: "[[30-resources/Example|Example]]"
 last_verified: YYYY-MM-DD        # required for a pointer
 freshness_window_days: 30        # optional; default 30
 valid_from: YYYY-MM-DD            # optional fact lifetime

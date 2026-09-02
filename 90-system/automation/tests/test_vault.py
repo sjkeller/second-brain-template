@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from datetime import date
 from pathlib import Path
+from unittest import mock
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "vault.py"
@@ -138,15 +139,35 @@ class MutationTests(unittest.TestCase):
     def test_set_frontmatter_expands_list_and_drops_old_values(self):
         text = "---\nid:\ntags:\n  - stale\n  - older\nstatus: draft\n---\n\n# Body\n"
         result = vault.set_frontmatter(text, {"id": "new-id", "tags": ["a", "b"], "status": "active"})
-        self.assertIn("id: new-id", result)
-        self.assertIn("  - a\n  - b", result)
+        self.assertIn('id: "new-id"', result)
+        self.assertIn('  - "a"\n  - "b"', result)
         self.assertNotIn("stale", result)
-        self.assertIn("status: active", result)
+        self.assertIn('status: "active"', result)
         self.assertIn("# Body", result)
+
+    def test_frontmatter_replacement_and_removal_consume_unindented_lists(self):
+        text = (
+            "---\nid: x\ntags:\n- old-a\n- old-b\nsupersedes:\n"
+            '- "[[old]]"\nstatus: active\n---\n\n# Body\n'
+        )
+        replaced = vault.set_frontmatter(text, {"tags": ["new"]})
+        self.assertNotIn("old-a", replaced)
+        self.assertNotIn("old-b", replaced)
+        self.assertEqual(vault.parse_frontmatter(replaced)[0]["tags"], ["new"])
+        removed = vault.remove_frontmatter_keys(replaced, {"supersedes"})
+        self.assertNotIn("[[old]]", removed)
+        self.assertNotIn("\n- ", removed.split("---", 2)[1])
+
+    def test_frontmatter_writer_round_trips_yaml_sensitive_strings(self):
+        values = ["Node.js: The Runtime", "[[weird]]", "Bob's \"Note\" \\ path"]
+        result = vault.set_frontmatter("---\nid: x\n---\n\n# B\n", {"aliases": values})
+        metadata, _ = vault.parse_frontmatter(result)
+        self.assertEqual(metadata["aliases"], values)
+        self.assertIn(json.dumps(values[2], ensure_ascii=False), result)
 
     def test_set_frontmatter_appends_missing_keys(self):
         result = vault.set_frontmatter("---\nid: x\n---\n\n# B\n", {"type": "concept"})
-        self.assertIn("type: concept", result)
+        self.assertIn('type: "concept"', result)
         metadata, _ = vault.parse_frontmatter(result)
         self.assertEqual(metadata["type"], "concept")
 
@@ -332,6 +353,26 @@ class RetrievalEvaluationTests(VaultFixture):
             "90-system/evals/retrieval-cases.jsonl",
             "".join(json.dumps(row) + "\n" for row in rows),
         )
+
+    def test_cases_must_be_private_jsonl_under_evals(self):
+        outside = self.write(
+            "retrieval-cases.jsonl",
+            json.dumps({
+                "query": "retrieval",
+                "expected": "40-knowledge/concepts/Retrieval.md",
+            }) + "\n",
+        )
+        cases, errors, relative = vault.load_retrieval_cases(self.root, outside.name)
+        self.assertEqual(cases, [])
+        self.assertEqual(relative, outside.name)
+        self.assertEqual(errors[0]["error"], "cases_path_not_allowed")
+
+        markdown = self.write("90-system/evals/not-jsonl.md", "not evaluation data\n")
+        _, errors, relative = vault.load_retrieval_cases(
+            self.root, "90-system/evals/not-jsonl.md"
+        )
+        self.assertEqual(relative, markdown.relative_to(self.root).as_posix())
+        self.assertEqual(errors[0]["error"], "cases_path_not_allowed")
 
     def test_evaluates_production_ranker_and_categories(self):
         self.write_cases([
@@ -795,6 +836,54 @@ class CheckTests(VaultFixture):
         _, payload = self.check()
         self.assertEqual(payload["warnings"]["ai_review"], [])
 
+    def test_ai_review_note_disappearing_after_cache_sync_is_reported(self):
+        path = self.write(
+            "00-inbox/Vanishing Draft.md",
+            note_text(
+                "vanishing-draft", "note", "Vanishing Draft", "Draft.\n\n[[Home]]",
+                extra="ai_review: pending\n",
+            ),
+        )
+        cache = vault.open_cache(self.root)
+
+        class RaceCache:
+            def notes(inner_self):
+                notes = cache.notes()
+                path.unlink()
+                return notes
+
+            def close(inner_self):
+                cache.close()
+
+        with mock.patch.object(vault, "open_cache", return_value=RaceCache()):
+            code, payload = self.check()
+        self.assertEqual(code, 0)
+        self.assertIn(
+            {"path": "00-inbox/Vanishing Draft.md", "issue": "note_unavailable_during_check"},
+            payload["warnings"]["ai_review"],
+        )
+
+    def test_template_relations_and_redirect_examples_are_schema_exempt(self):
+        self.write(
+            "90-system/templates/Relation Example.md",
+            note_text(
+                "template-relation", "concept", "Relation Example", "Example body.",
+                extra='supersedes: "[[40-knowledge/concepts/Retrieval|Retrieval]]"\n',
+            ),
+        )
+        self.write(
+            "90-system/templates/Redirect Example.md",
+            note_text(
+                "template-redirect", "redirect", "Redirect Example", "Example body.",
+                status="draft",
+                extra='redirect_to: "[[Home|Home]]"\n',
+            ),
+        )
+        _, payload = self.check()
+        self.assertEqual(payload["errors"]["typed_relation_integrity"], [])
+        self.assertEqual(payload["errors"]["redirect_integrity"], [])
+        self.assertEqual(payload["warnings"]["typed_relation_inverses"], [])
+
     def test_invalid_review_date_is_a_metadata_warning(self):
         self.write(
             "00-inbox/Review Date.md",
@@ -846,6 +935,35 @@ class ReadabilityTests(VaultFixture):
             item["path"] for item in payload["warnings"]["missing_lead_summary"]
         }
         self.assertNotIn("00-inbox/Readable.md", paths)
+
+    def test_heading_lines_match_the_file_after_frontmatter_and_fenced_code(self):
+        body = (
+            "```text\n# hidden\n## hidden too\n```\n\n"
+            "## Repeated\n\n#### Jump\n\n## Repeated\n"
+        )
+        path = self.write(
+            "00-inbox/Line Numbers.md",
+            note_text("line-numbers", "note", "Line Numbers", body),
+        )
+        expected_repeated = [
+            number for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if line == "## Repeated"
+        ]
+        expected_jump = next(
+            number for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if line == "#### Jump"
+        )
+        _, payload = self.readability()
+        duplicates = next(
+            item for item in payload["warnings"]["duplicate_headings"]
+            if item["path"] == "00-inbox/Line Numbers.md"
+        )
+        jump = next(
+            item for item in payload["warnings"]["heading_jumps"]
+            if item["path"] == "00-inbox/Line Numbers.md"
+        )
+        self.assertEqual(duplicates["lines"], expected_repeated)
+        self.assertEqual(jump["line"], expected_jump)
 
     def test_nonpositive_limit_is_rejected(self):
         code, payload = self.readability(min_words=0)
@@ -929,6 +1047,25 @@ class FreshnessTests(VaultFixture):
         issues = {item["issue"] for item in payload["warnings"]["freshness"]}
         self.assertIn("verification_expired", issues)
         self.assertIn("valid_until_before_valid_from", issues)
+
+    def test_invalid_window_and_unquoted_wikilink_truth_source_are_reported(self):
+        self.write(
+            "40-knowledge/concepts/Invalid Pointer.md",
+            note_text(
+                "invalid-pointer", "concept", "Invalid Pointer",
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+                extra=(
+                    "freshness: pointer\n"
+                    "truth_source: [[40-knowledge/concepts/Retrieval|Retrieval]]\n"
+                    f"last_verified: {TODAY}\n"
+                    "freshness_window_days: 90 days\n"
+                ),
+            ),
+        )
+        _, payload = self.check()
+        issues = {item["issue"] for item in payload["warnings"]["freshness"]}
+        self.assertIn("pointer_truth_source_must_be_scalar", issues)
+        self.assertIn("invalid_freshness_window_days", issues)
 
     def test_current_pointer_and_dated_snapshot_pass(self):
         self.write(
@@ -1090,12 +1227,22 @@ class NewNoteTests(VaultFixture):
     def test_moc_insertion_is_idempotent(self):
         moc = self.root / "40-knowledge/concepts/MOC - Concepts.md"
         line = "- [[40-knowledge/concepts/X|X]]"
+        original = moc.read_text(encoding="utf-8")
+        rendered, outcome = vault.render_moc_insert(original, line)
+        self.assertEqual(outcome, "inserted")
+        self.assertIsNotNone(rendered)
+        self.assertIn(line, rendered)
         self.assertTrue(vault.insert_into_moc(moc, line))
         self.assertTrue(vault.insert_into_moc(moc, line))
         self.assertEqual(moc.read_text(encoding="utf-8").count(line), 1)
 
     def test_moc_without_anchor_is_left_alone(self):
         moc = self.write("10-projects/MOC - Projects.md", note_text("moc-p", "moc", "Projects", "[[Home]]"))
+        rendered, outcome = vault.render_moc_insert(
+            moc.read_text(encoding="utf-8"), "- [[10-projects/Y|Y]]"
+        )
+        self.assertIsNone(rendered)
+        self.assertEqual(outcome, "missing_anchor")
         self.assertFalse(vault.insert_into_moc(moc, "- [[10-projects/Y|Y]]"))
 
 
@@ -1323,6 +1470,48 @@ class SafeMergeTests(VaultFixture):
         code, health = run(vault.command_check, self.root, True, False, True, 180, 60)
         self.assertEqual(code, 0, health)
         self.assertEqual(health["summary"]["redirect_integrity"], 0)
+
+    def test_merge_yaml_quotes_sensitive_titles_and_removes_unindented_relations(self):
+        canonical_title = "Bob's \"Note\""
+        retired_title = "Node.js: The [Runtime]"
+        self.write(
+            "40-knowledge/concepts/Bob.md",
+            note_text(
+                "bob-note", "concept", canonical_title,
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+            ),
+        )
+        self.write(
+            "10-projects/Node.md",
+            note_text(
+                "node-runtime", "project", retired_title, "[[Home]]",
+                extra=(
+                    "supersedes:\n"
+                    '- "[[40-knowledge/concepts/Retrieval|Retrieval]]"\n'
+                ),
+            ),
+        )
+        self.write(
+            "90-system/indexes/.merge-drafts/bob.md",
+            f"# {canonical_title}\n\nCombined.\n\n[[40-knowledge/concepts/MOC - Concepts]]\n",
+        )
+        plan, error = vault.build_merge_plan(
+            self.root,
+            "40-knowledge/concepts/Bob.md",
+            "10-projects/Node.md",
+            "90-system/indexes/.merge-drafts/bob.md",
+        )
+        self.assertIsNone(error)
+        assert plan is not None
+        canonical_metadata, _ = vault.parse_frontmatter(plan["_canonical_final"])
+        retired_metadata, _ = vault.parse_frontmatter(plan["_retired_final"])
+        self.assertIn(retired_title, canonical_metadata["aliases"])
+        self.assertEqual(
+            retired_metadata["redirect_to"],
+            f"[[40-knowledge/concepts/Bob|{canonical_title}]]",
+        )
+        self.assertNotIn("supersedes:", plan["_retired_final"])
+        self.assertNotIn('[[40-knowledge/concepts/Retrieval|Retrieval]]', plan["_retired_final"])
 
     def test_changed_input_invalidates_plan(self):
         draft = self.write_merged_body()

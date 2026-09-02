@@ -196,6 +196,7 @@ class Note:
     sha256: str
     mtime_ns: int = 0
     size: int = 0
+    body_line_offset: int = 0
     terms: dict[str, tuple[int, int, int]] = field(default_factory=dict)
     lengths: tuple[int, int, int] = (0, 0, 0)
 
@@ -227,11 +228,26 @@ def parse_scalar(value: str) -> Any:
         return value == "true"
     if value in {"null", "~"}:
         return ""
-    if (value.startswith('"') and value.endswith('"') and len(value) > 1) or (
-        value.startswith("'") and value.endswith("'") and len(value) > 1
-    ):
-        return value[1:-1]
+    if value.startswith('"') and value.endswith('"') and len(value) > 1:
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return value[1:-1]
+    if value.startswith("'") and value.endswith("'") and len(value) > 1:
+        return value[1:-1].replace("''", "'")
     return value
+
+
+def body_line_offset(text: str) -> int:
+    """Return the number of file lines before a parsed Markdown body begins."""
+    lines = text.splitlines()
+    if not lines or lines[0].strip() != "---":
+        return 0
+    try:
+        end = next(index for index in range(1, len(lines)) if lines[index].strip() == "---")
+    except StopIteration:
+        return 0
+    return end + 1
 
 
 def split_inline_list(inner: str) -> list[str]:
@@ -295,11 +311,15 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
             metadata[key] = parse_scalar(raw_value)
             continue
 
-        # The value continues on the indented lines that follow.
+        # YAML also permits an indentationless sequence directly under a mapping key.
         children: list[str] = []
         while index < len(block):
             child = block[index]
-            if child.strip() and (len(child) - len(child.lstrip(" "))) == 0:
+            if (
+                child.strip()
+                and (len(child) - len(child.lstrip(" "))) == 0
+                and not child.startswith("- ")
+            ):
                 break
             children.append(child)
             index += 1
@@ -335,8 +355,12 @@ def extract_title(body: str, fallback: str) -> str:
 
 
 def strip_code(text: str) -> str:
-    text = re.sub(r"\x60{3}.*?\x60{3}", "", text, flags=re.DOTALL)
-    return re.sub(r"\x60[^\x60\n]*\x60", "", text)
+    """Blank Markdown code while preserving offsets and line numbers."""
+    def blank(match: re.Match[str]) -> str:
+        return re.sub(r"[^\r\n]", " ", match.group(0))
+
+    text = re.sub(r"\x60{3}.*?\x60{3}", blank, text, flags=re.DOTALL)
+    return re.sub(r"\x60[^\x60\n]*\x60", blank, text)
 
 
 def extract_links(text: str) -> list[str]:
@@ -431,17 +455,31 @@ def build_note(path: Path, relative: str, raw: str, mtime_ns: int, size: int) ->
         sha256=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         mtime_ns=mtime_ns,
         size=size,
+        body_line_offset=body_line_offset(raw),
         terms=terms,
         lengths=(sum(title_tokens.values()), sum(meta_tokens.values()), sum(body_tokens.values())),
     )
 
 
+def iter_vault_files(root: Path) -> Iterator[Path]:
+    """Walk visible vault files deterministically without descending runtime folders."""
+    for directory, names, filenames in os.walk(root):
+        names[:] = sorted(
+            (
+                name for name in names
+                if not name.startswith(".") and name not in EXCLUDED_DIRS
+            ),
+            key=str.casefold,
+        )
+        for filename in sorted(filenames, key=str.casefold):
+            if not filename.startswith("."):
+                yield Path(directory) / filename
+
+
 def iter_markdown(root: Path) -> Iterator[Path]:
-    for path in sorted(root.rglob("*.md"), key=lambda item: item.as_posix().casefold()):
-        relative = path.relative_to(root)
-        if any(part.startswith(".") or part in EXCLUDED_DIRS for part in relative.parts[:-1]):
-            continue
-        yield path
+    for path in iter_vault_files(root):
+        if path.suffix.casefold() == ".md":
+            yield path
 
 
 def asset_maps(root: Path) -> tuple[set[str], dict[str, list[str]]]:
@@ -453,12 +491,10 @@ def asset_maps(root: Path) -> tuple[set[str], dict[str, list[str]]]:
     """
     by_path: set[str] = set()
     by_name: dict[str, list[str]] = defaultdict(list)
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix().casefold()):
-        if not path.is_file() or path.suffix.casefold() == ".md":
+    for path in iter_vault_files(root):
+        if path.suffix.casefold() == ".md":
             continue
         relative_path = path.relative_to(root)
-        if any(part.startswith(".") or part in EXCLUDED_DIRS for part in relative_path.parts):
-            continue
         relative = relative_path.as_posix()
         by_path.add(relative.casefold())
         by_name[path.name.casefold()].append(relative)
@@ -752,14 +788,21 @@ def open_cache(root: Path, rebuild: bool = False) -> VaultCache:
 # ---------------------------------------------------------------------------
 
 
-def hydrate_bodies(root: Path, notes: Iterable[Note]) -> None:
-    """Read note bodies from disk for the few notes that need them (excerpts, packing)."""
+def hydrate_bodies(root: Path, notes: Iterable[Note]) -> list[str]:
+    """Read selected bodies, returning paths that disappeared or became unreadable."""
+    unavailable: list[str] = []
     for note in notes:
         if note.body:
             continue
         path = root / note.path
-        if path.is_file():
-            _, note.body = parse_frontmatter(path.read_text(encoding="utf-8-sig"))
+        try:
+            raw = path.read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeDecodeError):
+            unavailable.append(note.path)
+            continue
+        _, note.body = parse_frontmatter(raw)
+        note.body_line_offset = body_line_offset(raw)
+    return unavailable
 
 
 def note_maps(notes: list[Note]) -> tuple[dict[str, Note], dict[str, list[Note]]]:
@@ -939,12 +982,12 @@ def metadata_values(value: Any) -> list[str]:
     return [str(value).strip()]
 
 
-def parse_positive_int(value: Any, fallback: int) -> int:
+def parse_positive_int(value: Any) -> int | None:
     try:
         parsed = int(str(value).strip())
     except (TypeError, ValueError):
-        return fallback
-    return parsed if parsed > 0 else fallback
+        return None
+    return parsed if parsed > 0 else None
 
 
 def freshness_findings(note: Note, today: date) -> list[dict[str, Any]]:
@@ -961,15 +1004,31 @@ def freshness_findings(note: Note, today: date) -> list[dict[str, Any]]:
         if observed is None:
             findings.append({"path": note.path, "issue": "snapshot_missing_observed_date"})
     elif mode == "pointer":
-        if not str(note.metadata.get("truth_source", "")).strip():
+        truth_source = note.metadata.get("truth_source", "")
+        if not isinstance(truth_source, str):
+            findings.append({
+                "path": note.path,
+                "issue": "pointer_truth_source_must_be_scalar",
+            })
+        elif not truth_source.strip():
             findings.append({"path": note.path, "issue": "pointer_missing_truth_source"})
         verified = parse_date(note.metadata.get("last_verified", ""))
         if verified is None:
             findings.append({"path": note.path, "issue": "pointer_missing_last_verified"})
         else:
-            window = parse_positive_int(
-                note.metadata.get("freshness_window_days", ""), DEFAULT_FRESHNESS_DAYS
-            )
+            window_raw = note.metadata.get("freshness_window_days", "")
+            window = DEFAULT_FRESHNESS_DAYS
+            if window_raw not in (None, ""):
+                parsed_window = parse_positive_int(window_raw)
+                if parsed_window is None:
+                    findings.append({
+                        "path": note.path,
+                        "issue": "invalid_freshness_window_days",
+                        "value": window_raw,
+                        "used_default": DEFAULT_FRESHNESS_DAYS,
+                    })
+                else:
+                    window = parsed_window
             age = (today - verified).days
             if age > window:
                 findings.append(
@@ -1333,10 +1392,11 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
                 {"path": note.path, "issue": "invalid_state", "value": ai_review}
             )
         elif ai_review == "pending":
-            _, review_body = parse_frontmatter(
-                (root / note.path).read_text(encoding="utf-8-sig")
-            )
-            if AI_REVIEW_MARKER not in review_body.casefold():
+            if hydrate_bodies(root, [note]):
+                ai_review_findings.append(
+                    {"path": note.path, "issue": "note_unavailable_during_check"}
+                )
+            elif AI_REVIEW_MARKER not in note.body.casefold():
                 ai_review_findings.append(
                     {"path": note.path, "issue": "missing_visible_callout"}
                 )
@@ -1412,8 +1472,9 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
             "singletons": sorted(tag for tag, count in tag_counter.items() if count == 1),
         }
 
-    typed_relation_integrity, typed_relation_inverses = typed_relation_findings(notes)
-    redirect_integrity = redirect_findings(notes)
+    integrity_notes = [note for note in notes if not schema_exempt(note)]
+    typed_relation_integrity, typed_relation_inverses = typed_relation_findings(integrity_notes)
+    redirect_integrity = redirect_findings(integrity_notes)
     findings: dict[str, Any] = {
         "unresolved_links": unresolved,
         "duplicate_ids": duplicate_ids,
@@ -1640,6 +1701,8 @@ def load_retrieval_cases(root: Path, requested: str) -> tuple[list[RetrievalCase
     if resolved is None:
         return [], [{"error": "outside_vault", "requested": requested}], None
     path, relative = resolved
+    if not relative.startswith(RETRIEVAL_EVAL_PREFIX) or path.suffix.casefold() != ".jsonl":
+        return [], [{"error": "cases_path_not_allowed", "path": relative}], relative
     if not path.is_file():
         return [], [{"error": "cases_not_found", "path": relative}], relative
 
@@ -2557,13 +2620,13 @@ def command_stale(root: Path, days: int, compact: bool) -> int:
 # ---------------------------------------------------------------------------
 
 
-def heading_records(body: str) -> list[dict[str, Any]]:
+def heading_records(body: str, line_offset: int = 0) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for match in HEADING_RE.finditer(body):
         records.append({
             "level": len(match.group(1)),
             "name": match.group(2).strip().rstrip("#").strip(),
-            "line": body.count("\n", 0, match.start()) + 1,
+            "line": body.count("\n", 0, match.start()) + 1 + line_offset,
             "offset": match.start(),
         })
     return records
@@ -2603,7 +2666,7 @@ def readability_findings(
         "long_paragraphs": [],
     }
     readable_body = strip_code(note.body)
-    headings = heading_records(readable_body)
+    headings = heading_records(readable_body, note.body_line_offset)
     lead_offsets = [
         item["offset"] for item in headings
         if item["level"] >= 2 and item["name"].casefold() in LEAD_LABELS
@@ -2950,6 +3013,22 @@ def render_template(text: str, title: str, today: date) -> str:
     return text.replace("{{title}}", title)
 
 
+def safe_frontmatter_scalar(value: Any) -> str:
+    """Render one JSON-compatible scalar, which is also valid YAML for Obsidian."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return json.dumps(str(value), ensure_ascii=False)
+
+
+def is_frontmatter_continuation(line: str) -> bool:
+    """Recognise indented children and YAML's valid indentationless sequences."""
+    return not line.strip() or line.startswith((" ", "\t", "- "))
+
+
 def set_frontmatter(text: str, values: dict[str, Any]) -> str:
     """Set keys inside an existing frontmatter block, preserving order and unknown keys."""
     lines = text.splitlines()
@@ -2963,8 +3042,8 @@ def set_frontmatter(text: str, values: dict[str, Any]) -> str:
         if isinstance(value, list):
             if not value:
                 return [f"{key}: []"]
-            return [f"{key}:"] + [f"  - {item}" for item in value]
-        return [f"{key}: {value}"]
+            return [f"{key}:"] + [f"  - {safe_frontmatter_scalar(item)}" for item in value]
+        return [f"{key}: {safe_frontmatter_scalar(value)}"]
 
     remaining = dict(values)
     rebuilt: list[str] = [lines[0]]
@@ -2979,7 +3058,7 @@ def set_frontmatter(text: str, values: dict[str, Any]) -> str:
             continue
         rebuilt.extend(render(key, remaining.pop(key)))
         # Drop the replaced key's own continuation lines so old values don't survive.
-        while index < end and (not lines[index].strip() or lines[index].startswith((" ", "\t"))):
+        while index < end and is_frontmatter_continuation(lines[index]):
             index += 1
     for key, value in remaining.items():
         rebuilt.extend(render(key, value))
@@ -3006,7 +3085,7 @@ def remove_frontmatter_keys(text: str, keys: set[str]) -> str:
         if key not in keys:
             rebuilt.append(line)
             continue
-        while index < end and (not lines[index].strip() or lines[index].startswith((" ", "\t"))):
+        while index < end and is_frontmatter_continuation(lines[index]):
             index += 1
     rebuilt.extend(lines[end:])
     return "\n".join(rebuilt)
@@ -3174,9 +3253,7 @@ def build_merge_plan(
         "type": "redirect",
         "status": "superseded",
         "updated": today,
-        # Quote the wikilink so the deliberately small YAML parser does not treat the
-        # outer brackets as an inline list.
-        "redirect_to": f"'{redirect_link}'",
+        "redirect_to": redirect_link,
     })
     redirect_body = (
         f"# {retired.title}\n\n"
@@ -3350,14 +3427,14 @@ def find_moc(root: Path, folder: str) -> Path | None:
     return candidates[0] if len(candidates) == 1 else None
 
 
-def insert_into_moc(moc_path: Path, link_line: str) -> bool:
-    """Append the link at the end of the list that follows the `vault:links` anchor."""
-    lines = moc_path.read_text(encoding="utf-8-sig").splitlines()
+def render_moc_insert(original: str, link_line: str) -> tuple[str | None, str]:
+    """Render one MOC insertion and report inserted, exists, or missing_anchor."""
+    lines = original.splitlines()
     anchor_index = next((index for index, line in enumerate(lines) if ANCHOR in line), None)
     if anchor_index is None:
-        return False
+        return None, "missing_anchor"
     if any(line.strip() == link_line for line in lines):
-        return True
+        return original, "exists"
     insert_at = anchor_index + 1
     cursor = insert_at
     while cursor < len(lines) and (lines[cursor].startswith("- ") or not lines[cursor].strip()):
@@ -3365,7 +3442,17 @@ def insert_into_moc(moc_path: Path, link_line: str) -> bool:
             insert_at = cursor + 1
         cursor += 1
     lines.insert(insert_at, link_line)
-    moc_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines) + "\n", "inserted"
+
+
+def insert_into_moc(moc_path: Path, link_line: str) -> bool:
+    """Append the link at the end of the list that follows the `vault:links` anchor."""
+    original = moc_path.read_text(encoding="utf-8-sig")
+    rendered, outcome = render_moc_insert(original, link_line)
+    if rendered is None:
+        return False
+    if outcome == "inserted":
+        moc_path.write_text(rendered, encoding="utf-8")
     return True
 
 

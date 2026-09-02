@@ -3,7 +3,7 @@ id: mcp-integration
 type: system
 status: active
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-03
 tags:
   - system/agent
   - system/integration
@@ -113,9 +113,11 @@ not replace existing settings wholesale. The committed `.claude/settings.json` p
 the same behavior only when the vault itself is the Claude project.
 
 User-scoped hooks matter here: project-local hooks from the vault do not automatically
-load merely because another project calls a user-scoped MCP server. Conversely, MCP tool
-calls do fire `PreToolUse`, `PostToolUse`, and `PostToolUseFailure`; the supplied matcher
-intentionally narrows those events to `capture_note` and `capture_raw_source`.
+load merely because another project calls a user-scoped MCP server. Claude Code exposes
+`PreToolUse`, `PostToolUse`, and `PostToolUseFailure` for MCP calls. Codex currently exposes
+`PreToolUse` and `PostToolUse`; its `PostToolUse` also covers completed calls that return an
+error result. The client-specific examples therefore differ intentionally. Both narrow
+their matchers to `capture_note` and `capture_raw_source`.
 
 ## Verify
 

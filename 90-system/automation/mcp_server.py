@@ -615,23 +615,6 @@ class VaultWriteLock:
             pass
 
 
-def render_moc_insert(original: str, link_line: str) -> str:
-    lines = original.splitlines()
-    anchor_index = next((index for index, line in enumerate(lines) if vault.ANCHOR in line), None)
-    if anchor_index is None:
-        raise ToolInputError("moc_anchor_missing", "the destination MOC has no machine insertion anchor")
-    if any(line.strip() == link_line for line in lines):
-        raise ToolInputError("moc_link_exists", "the destination MOC already contains this note link")
-    insert_at = anchor_index + 1
-    cursor = insert_at
-    while cursor < len(lines) and (lines[cursor].startswith("- ") or not lines[cursor].strip()):
-        if lines[cursor].startswith("- "):
-            insert_at = cursor + 1
-        cursor += 1
-    lines.insert(insert_at, link_line)
-    return "\n".join(lines) + "\n"
-
-
 def new_note_dry_run(root: Path, note_type: str, title: str, tags: list[str]) -> dict[str, Any]:
     code, payload = run_json_command(
         vault.command_new,
@@ -652,25 +635,20 @@ def new_note_dry_run(root: Path, note_type: str, title: str, tags: list[str]) ->
     return payload
 
 
-def ensure_unique_identity(root: Path, title: str, note_id: str) -> None:
-    for note in vault.scan_notes(root):
+def ensure_unique_identity(notes: list[vault.Note], title: str, note_id: str) -> None:
+    for note in notes:
         if note.title.casefold() == title.casefold():
             raise ToolInputError("duplicate_title", "a note with this title already exists", path=note.path)
         if str(note.metadata.get("id", "")).strip().casefold() == note_id.casefold():
             raise ToolInputError("duplicate_id", "a note with the generated id already exists", path=note.path)
 
 
-def safe_frontmatter_scalar(value: str) -> str:
-    if not value:
-        return ""
-    if "'" not in value:
-        return f"'{value}'"
-    if '"' not in value:
-        return f'"{value}"'
-    return json.dumps(value, ensure_ascii=False)
-
-
-def validate_candidate_note(root: Path, relative: str, final_text: str) -> None:
+def validate_candidate_note(
+    root: Path,
+    relative: str,
+    final_text: str,
+    existing_notes: list[vault.Note],
+) -> None:
     resolved = vault.resolve_vault_path(root, relative)
     if resolved is None:
         raise ToolInputError("outside_vault", "generated capture path left the configured vault")
@@ -682,7 +660,7 @@ def validate_candidate_note(root: Path, relative: str, final_text: str) -> None:
         0,
         len(final_text.encode("utf-8")),
     )
-    notes = [*vault.scan_notes(root), candidate]
+    notes = [*existing_notes, candidate]
     _, unresolved = vault.graph(notes, vault.asset_maps(root))
     candidate_unresolved = [
         finding["target"] for finding in unresolved if finding["source"] == normalized_relative
@@ -715,7 +693,11 @@ def write_new_note_and_moc(root: Path, draft: dict[str, Any], final_text: str, t
 
     moc_original = moc_path.read_text(encoding="utf-8-sig")
     link_line = f"- [[{note_relative.removesuffix('.md')}|{title}]]"
-    moc_final = render_moc_insert(moc_original, link_line)
+    moc_final, moc_outcome = vault.render_moc_insert(moc_original, link_line)
+    if moc_final is None:
+        raise ToolInputError("moc_anchor_missing", "the destination MOC has no machine insertion anchor")
+    if moc_outcome == "exists":
+        raise ToolInputError("moc_link_exists", "the destination MOC already contains this note link")
     note_temp: Path | None = None
     moc_temp: Path | None = None
     note_installed = False
@@ -767,7 +749,8 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         draft = new_note_dry_run(root, "note", title, tags)
         metadata, _ = vault.parse_frontmatter(draft["content"])
         note_id = str(metadata.get("id", "")).strip()
-        ensure_unique_identity(root, title, note_id)
+        existing_notes = vault.scan_notes(root)
+        ensure_unique_identity(existing_notes, title, note_id)
         body = (
             f"# {title}\n\n"
             "> [!warning] AI draft — not yet human-reviewed\n"
@@ -785,7 +768,7 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         moc_path = root / draft["moc"]
         final_text = vault.ensure_parent_moc_link(final_text, root, moc_path)
         final_text = vault.set_frontmatter(final_text, {"ai_review": "pending"})
-        validate_candidate_note(root, draft["path"], final_text)
+        validate_candidate_note(root, draft["path"], final_text, existing_notes)
         write_new_note_and_moc(root, draft, final_text, title)
     return {
         "created": True,
@@ -847,7 +830,8 @@ def capture_raw_source(root: Path, raw_arguments: Any) -> dict[str, Any]:
         draft = new_note_dry_run(root, "raw-source", title, combined_tags)
         metadata, _ = vault.parse_frontmatter(draft["content"])
         note_id = str(metadata.get("id", "")).strip()
-        ensure_unique_identity(root, title, note_id)
+        existing_notes = vault.scan_notes(root)
+        ensure_unique_identity(existing_notes, title, note_id)
 
         before, remainder = draft["content"].split(vault.RAW_SOURCE_BEGIN, 1)
         _, after = remainder.split(vault.RAW_SOURCE_END, 1)
@@ -865,9 +849,9 @@ def capture_raw_source(root: Path, raw_arguments: Any) -> dict[str, Any]:
         final_text = vault.set_frontmatter(
             final_text,
             {
-                "source_url": safe_frontmatter_scalar(source_url),
-                "author": safe_frontmatter_scalar(author),
-                "published": safe_frontmatter_scalar(published),
+                "source_url": source_url,
+                "author": author,
+                "published": published,
                 "accessed": today,
                 "capture_scope": capture_scope,
                 "observed": today,
@@ -886,7 +870,7 @@ def capture_raw_source(root: Path, raw_arguments: Any) -> dict[str, Any]:
                 vault.RAW_SOURCE_HASH_KEY: digest,
             },
         )
-        validate_candidate_note(root, draft["path"], final_text)
+        validate_candidate_note(root, draft["path"], final_text, existing_notes)
         write_new_note_and_moc(root, draft, final_text, title)
     return {
         "trust_boundary": TRUST_BOUNDARY,

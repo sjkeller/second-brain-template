@@ -26,19 +26,6 @@
           }
         ]
       }
-    ],
-    "PostToolUseFailure": [
-      {
-        "matcher": "^mcp__second-brain__capture_(note|raw_source)$",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "python3 \"$(git rev-parse --show-toplevel)/90-system/automation/mcp_hook.py\" --vault-root \"$(git rev-parse --show-toplevel)\"",
-            "commandWindows": "powershell.exe -NoProfile -Command \"$root = git rev-parse --show-toplevel; & python3 (Join-Path $root '90-system/automation/mcp_hook.py') --vault-root $root\"",
-            "timeout": 5
-          }
-        ]
-      }
     ]
   }
 }
