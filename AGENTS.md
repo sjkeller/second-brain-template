@@ -39,7 +39,11 @@ canonical note on external evidence requires a proposed diff and explicit user c
   frontmatter when this command covers the case.
 - Preserve user-authored meaning, provenance, dates, and unresolved uncertainty.
   Never invent personal facts, citations, or completion status.
+- Apply `90-system/Freshness Policy.md` to claims whose currentness matters. Use a dated
+  snapshot or a verified truth pointer; `updated` alone does not verify a claim.
 - Link with vault-root wikilinks: `[[40-knowledge/concepts/Concept Name|Concept Name]]`.
+- Use only the typed relation fields in `90-system/Link Policy.md`, with wikilink targets;
+  relations are claims, not graph decoration.
 - Every durable note links to at least one MOC. Add lateral links only when the
   relationship is real; `check` reports notes that have no MOC edge.
 - Record consequential choices in `60-decisions`.

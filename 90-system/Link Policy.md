@@ -24,6 +24,28 @@ Obsidian's graph shows links, not folder containment. Folder index notes therefo
 
 Add a link when it answers one of these questions: “supports what?”, “contradicts what?”, “depends on what?”, “is an example of what?”, or “changed because of what?” Explain non-obvious relationships in prose instead of creating unexplained link lists.
 
+## Typed relations
+
+When the relationship itself must be queryable, use one of these optional flat frontmatter
+lists. Values are root-relative wikilinks; an edge is a factual claim and must not be guessed.
+
+| Field | Inverse | Meaning |
+| --- | --- | --- |
+| `supersedes` | `superseded_by` | this note replaces an earlier note or decision |
+| `depends_on` | `required_by` | this note requires the target |
+| `supports` | `supported_by` | this source or evidence supports the target |
+| `contradicts` | `contradicts` | the two notes contain a real unresolved conflict |
+
+```yaml
+depends_on:
+  - "[[40-knowledge/concepts/Example|Example]]"
+supports: []
+```
+
+`vault.py check` fails on malformed, dangling, self-referential, or cyclic supersession
+relations and warns when the inverse declaration is missing. Add both directions when the
+relationship is worth typing; ordinary prose links remain valid and need no inverse field.
+
 ## Link format
 
 Use vault-root paths for machine-authored links: `[[40-knowledge/concepts/Concept Name|Concept Name]]`. This avoids ambiguous filenames while keeping readable display text. Avoid duplicate filenames for canonical notes.

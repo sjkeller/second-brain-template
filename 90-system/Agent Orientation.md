@@ -41,6 +41,8 @@ frontmatter, link resolution, open tasks, staleness, and tag inventory are all d
   [[90-system/templates/MOC - Templates|template]] and preserves the stable frontmatter keys.
 - Prefer one durable subject per note. Keep prose readable for humans.
 - Create explicit semantic edges according to [[90-system/Link Policy|Link Policy]].
+- Use [[90-system/Freshness Policy|Freshness Policy]] for facts that can become stale; do
+  not infer freshness from the note's `updated` date.
 - Update the nearest MOC when adding a durable note.
 - Record consequential choices in [[60-decisions/MOC - Decisions|Decisions]].
 - Never silently replace a user's assertion with a model guess.

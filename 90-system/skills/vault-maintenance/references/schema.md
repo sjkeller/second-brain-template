@@ -47,6 +47,13 @@ Unclear destination → `00-inbox`. Inactive material → `80-archive`. Operatin
 becomes immutable when `vault.py source-seal` records its SHA-256 digest. Metadata and
 derived-note links outside the payload may still change. See [[90-system/Source Trust Policy]].
 
+## Freshness
+
+Use [[90-system/Freshness Policy]] only for facts whose currentness matters. An explicit
+snapshot needs `observed`; a pointer needs `truth_source` and `last_verified`, with an
+optional `freshness_window_days` (default 30). Optional `valid_from` and `valid_until`
+record the lifetime of a changing fact. `updated` is never a substitute for verification.
+
 ## Linking
 
 Use root-relative wikilinks with paths and readable aliases. Every durable note needs a
@@ -54,6 +61,11 @@ parent MOC edge — `check` reports notes that have none, which is the failure t
 degrades the graph. Sources support claims; decisions affect work; projects belong to
 areas. Do not use tags as a substitute for semantic links, and keep the tag vocabulary
 small: `check` warns when it sprawls, and `vault.py tags` shows the inventory.
+
+Typed relationships use only the flat fields in [[90-system/Link Policy]]: `supersedes` /
+`superseded_by`, `depends_on` / `required_by`, `supports` / `supported_by`, and the symmetric
+`contradicts`. Every value is one root-relative wikilink. The checker validates targets,
+self-edges, inverse declarations, and supersession cycles.
 
 ## MOC anchors
 

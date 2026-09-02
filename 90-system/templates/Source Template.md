@@ -11,6 +11,11 @@ published:
 accessed: "{{date:YYYY-MM-DD}}"
 url:
 raw_source:
+freshness: snapshot
+observed: "{{date:YYYY-MM-DD}}"
+supports: []
+supported_by: []
+contradicts: []
 ---
 
 # {{title}}

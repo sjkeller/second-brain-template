@@ -30,7 +30,10 @@ tags:
 
 ## Currentness
 
-Use the `updated` property to signal note maintenance, not source publication. Time-sensitive facts require a dated source note or an explicit “last verified” statement. Archived or superseded notes are not current authority.
+Use the `updated` property to signal note maintenance, not source publication. Time-sensitive
+facts require a dated snapshot or a pointer with an explicit verification date. Archived or
+superseded notes are not current authority. Apply [[90-system/Freshness Policy|Freshness Policy]]
+when currentness matters; do not add freshness metadata as empty boilerplate.
 
 ## Safe mutation
 

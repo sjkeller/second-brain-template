@@ -14,6 +14,10 @@ author:
 published:
 accessed: "{{date:YYYY-MM-DD}}"
 capture_scope: full
+freshness: snapshot
+observed: "{{date:YYYY-MM-DD}}"
+supersedes: []
+superseded_by: []
 derived_notes: []
 ---
 

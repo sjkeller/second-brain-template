@@ -51,9 +51,11 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 
 - `... check` — separates **errors** from **warnings** and exits nonzero only on errors.
   - Errors: unresolved note or attachment links, duplicate ids, duplicate titles, broken
-    or drifted skill pointers, and changed or structurally invalid sealed raw-source payloads.
+    or drifted skill pointers, changed or structurally invalid sealed raw-source payloads,
+    and malformed typed relations or supersession cycles.
   - Warnings: missing frontmatter keys, type/folder placement, notes with no MOC edge,
-    orphans, staleness, tag sprawl, and raw sources that have not been sealed yet.
+    orphans, staleness, tag sprawl, raw sources that have not been sealed yet, declared
+    freshness problems, and typed relations whose inverse declaration is missing.
   - `--strict` fails on warnings too; `--quiet` prints the summary and errors only.
 - `... cache` / `cache --rebuild` — inspect or discard the retrieval cache.
 - `python3 -m unittest discover -s 90-system/automation/tests` — the test suite.

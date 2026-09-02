@@ -44,6 +44,19 @@ RAW_SOURCE_BEGIN = "<!-- raw-source:begin -->"
 RAW_SOURCE_END = "<!-- raw-source:end -->"
 RAW_SOURCE_HASH_KEY = "content_sha256"
 
+FRESHNESS_MODES = {"timeless", "snapshot", "pointer"}
+DEFAULT_FRESHNESS_DAYS = 30
+RELATION_INVERSES = {
+    "supersedes": "superseded_by",
+    "superseded_by": "supersedes",
+    "depends_on": "required_by",
+    "required_by": "depends_on",
+    "supports": "supported_by",
+    "supported_by": "supports",
+    "contradicts": "contradicts",
+}
+RELATION_FIELDS = tuple(RELATION_INVERSES)
+
 EXCLUDED_DIRS = {".agents", ".claude", ".git", ".obsidian", "__pycache__", ".trash"}
 REQUIRED_KEYS = ("id", "type", "status", "created", "updated")
 ROOT_EXEMPT = {"AGENTS.md", "CLAUDE.md"}
@@ -116,11 +129,11 @@ CHARS_PER_TOKEN = 4  # Deliberately rough; `pack` reports the exact character co
 
 ERROR_KEYS = (
     "unresolved_links", "duplicate_ids", "duplicate_titles", "skill_pointers",
-    "raw_source_integrity",
+    "raw_source_integrity", "typed_relation_integrity",
 )
 WARNING_KEYS = (
     "metadata_issues", "placement", "moc_coverage", "orphans", "stale",
-    "tag_vocabulary", "raw_source_drafts",
+    "tag_vocabulary", "raw_source_drafts", "freshness", "typed_relation_inverses",
 )
 
 DEFAULT_STALE_DAYS = 180
@@ -864,6 +877,165 @@ def raw_source_finding(root: Path, note: Note) -> dict[str, str] | None:
     return None
 
 
+def metadata_values(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return [str(value).strip()]
+
+
+def parse_positive_int(value: Any, fallback: int) -> int:
+    try:
+        parsed = int(str(value).strip())
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def freshness_findings(note: Note, today: date) -> list[dict[str, Any]]:
+    """Validate explicit freshness metadata; never guess volatility from prose."""
+    mode = str(note.metadata.get("freshness", "")).strip()
+    if not mode:
+        return []
+    findings: list[dict[str, Any]] = []
+    if mode not in FRESHNESS_MODES:
+        return [{"path": note.path, "issue": "unknown_mode", "value": mode}]
+
+    if mode == "snapshot":
+        observed = parse_date(note.metadata.get("observed", ""))
+        if observed is None:
+            findings.append({"path": note.path, "issue": "snapshot_missing_observed_date"})
+    elif mode == "pointer":
+        if not str(note.metadata.get("truth_source", "")).strip():
+            findings.append({"path": note.path, "issue": "pointer_missing_truth_source"})
+        verified = parse_date(note.metadata.get("last_verified", ""))
+        if verified is None:
+            findings.append({"path": note.path, "issue": "pointer_missing_last_verified"})
+        else:
+            window = parse_positive_int(
+                note.metadata.get("freshness_window_days", ""), DEFAULT_FRESHNESS_DAYS
+            )
+            age = (today - verified).days
+            if age > window:
+                findings.append(
+                    {
+                        "path": note.path,
+                        "issue": "verification_expired",
+                        "last_verified": verified.isoformat(),
+                        "age_days": age,
+                        "window_days": window,
+                    }
+                )
+
+    valid_from_raw = str(note.metadata.get("valid_from", "")).strip()
+    valid_until_raw = str(note.metadata.get("valid_until", "")).strip()
+    valid_from = parse_date(valid_from_raw) if valid_from_raw else None
+    valid_until = parse_date(valid_until_raw) if valid_until_raw not in {"", "present"} else None
+    if valid_from_raw and valid_from is None:
+        findings.append({"path": note.path, "issue": "invalid_valid_from"})
+    if valid_until_raw not in {"", "present"} and valid_until is None:
+        findings.append({"path": note.path, "issue": "invalid_valid_until"})
+    if valid_from and valid_until and valid_until < valid_from:
+        findings.append({"path": note.path, "issue": "valid_until_before_valid_from"})
+    return findings
+
+
+def supersession_cycles(edges: dict[str, set[str]]) -> list[list[str]]:
+    """Return unique directed cycles in the supersedes graph."""
+    state: dict[str, int] = {}
+    stack: list[str] = []
+    positions: dict[str, int] = {}
+    cycles: set[tuple[str, ...]] = set()
+
+    def visit(node: str) -> None:
+        state[node] = 1
+        positions[node] = len(stack)
+        stack.append(node)
+        for target in sorted(edges.get(node, set()), key=str.casefold):
+            if state.get(target, 0) == 0:
+                visit(target)
+            elif state.get(target) == 1:
+                cycle = stack[positions[target]:]
+                if cycle:
+                    rotations = [tuple(cycle[index:] + cycle[:index]) for index in range(len(cycle))]
+                    cycles.add(min(rotations))
+        stack.pop()
+        positions.pop(node, None)
+        state[node] = 2
+
+    for node in sorted(edges, key=str.casefold):
+        if state.get(node, 0) == 0:
+            visit(node)
+    return [list(cycle) for cycle in sorted(cycles)]
+
+
+def typed_relation_findings(
+    notes: list[Note],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Validate flat typed-link fields and report missing inverse declarations."""
+    by_path, by_stem = note_maps(notes)
+    errors: list[dict[str, Any]] = []
+    relations: set[tuple[str, str, str]] = set()
+    supersedes: dict[str, set[str]] = defaultdict(set)
+
+    for note in notes:
+        for relation in RELATION_FIELDS:
+            for raw_target in metadata_values(note.metadata.get(relation)):
+                targets = extract_links(raw_target)
+                if len(targets) != 1:
+                    errors.append(
+                        {
+                            "path": note.path,
+                            "relation": relation,
+                            "target": raw_target,
+                            "issue": "target_must_be_one_wikilink",
+                        }
+                    )
+                    continue
+                resolved = resolve_target(targets[0], by_path, by_stem)
+                if resolved is None:
+                    errors.append(
+                        {
+                            "path": note.path,
+                            "relation": relation,
+                            "target": targets[0],
+                            "issue": "dangling_target",
+                        }
+                    )
+                    continue
+                if resolved.path == note.path:
+                    errors.append(
+                        {
+                            "path": note.path,
+                            "relation": relation,
+                            "target": resolved.path,
+                            "issue": "self_relation",
+                        }
+                    )
+                    continue
+                relations.add((note.path, relation, resolved.path))
+                if relation == "supersedes":
+                    supersedes[note.path].add(resolved.path)
+
+    for cycle in supersession_cycles(supersedes):
+        errors.append({"issue": "supersession_cycle", "paths": cycle})
+
+    missing_inverses = []
+    for source, relation, target in sorted(relations):
+        inverse = RELATION_INVERSES[relation]
+        if (target, inverse, source) not in relations:
+            missing_inverses.append(
+                {
+                    "path": source,
+                    "relation": relation,
+                    "target": target,
+                    "missing_inverse": inverse,
+                }
+            )
+    return errors, missing_inverses
+
+
 def retrieval_filtered(notes: list[Note], include_templates: bool) -> list[Note]:
     if include_templates:
         return notes
@@ -893,6 +1065,11 @@ def command_index(root: Path, compact: bool) -> int:
                 "updated": note.metadata.get("updated", ""),
                 "aliases": note.metadata.get("aliases", []),
                 "tags": note_tags(note.metadata),
+                "relations": {
+                    relation: metadata_values(note.metadata.get(relation))
+                    for relation in RELATION_FIELDS
+                    if metadata_values(note.metadata.get(relation))
+                },
                 "word_count": note.word_count,
                 "headings": note.headings,
                 "outbound": resolved,
@@ -1043,6 +1220,7 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
     tag_counter: Counter[str] = Counter()
     raw_source_integrity: list[dict[str, str]] = []
     raw_source_drafts: list[dict[str, str]] = []
+    freshness: list[dict[str, Any]] = []
 
     for note in notes:
         note_id = str(note.metadata.get("id", "")).strip()
@@ -1071,6 +1249,8 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
                 finding = raw_source_finding(root, note)
                 if finding:
                     raw_source_integrity.append(finding)
+
+        freshness.extend(freshness_findings(note, today))
 
         # Placement: the schema maps each type to a home folder.
         if (
@@ -1127,12 +1307,14 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
             "singletons": sorted(tag for tag, count in tag_counter.items() if count == 1),
         }
 
+    typed_relation_integrity, typed_relation_inverses = typed_relation_findings(notes)
     findings: dict[str, Any] = {
         "unresolved_links": unresolved,
         "duplicate_ids": duplicate_ids,
         "duplicate_titles": duplicate_titles,
         "skill_pointers": check_skill_pointers(root),
         "raw_source_integrity": raw_source_integrity,
+        "typed_relation_integrity": typed_relation_integrity,
         "metadata_issues": metadata_missing,
         "placement": placement,
         "moc_coverage": moc_coverage,
@@ -1140,6 +1322,8 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         "stale": stale,
         "tag_vocabulary": tag_vocabulary,
         "raw_source_drafts": raw_source_drafts,
+        "freshness": freshness,
+        "typed_relation_inverses": typed_relation_inverses,
     }
 
     error_count = sum(len(findings[key]) for key in ERROR_KEYS)

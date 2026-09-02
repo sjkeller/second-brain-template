@@ -6,6 +6,13 @@ created: "{{date:YYYY-MM-DD}}"
 updated: "{{date:YYYY-MM-DD}}"
 aliases: []
 tags: []
+supersedes: []
+superseded_by: []
+depends_on: []
+required_by: []
+supports: []
+supported_by: []
+contradicts: []
 ---
 
 # {{title}}

@@ -445,6 +445,117 @@ class CheckTests(VaultFixture):
         self.assertNotIn("warnings", payload)
 
 
+class FreshnessTests(VaultFixture):
+    def check(self):
+        return run(
+            vault.command_check, self.root, compact=True, strict=False, quiet=False,
+            stale_days=vault.DEFAULT_STALE_DAYS, max_tags=vault.DEFAULT_MAX_TAGS,
+        )
+
+    def test_pointer_requires_truth_source_and_verification_date(self):
+        self.write(
+            "40-knowledge/concepts/Live State.md",
+            note_text(
+                "live-state", "concept", "Live State",
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+                extra="freshness: pointer\ntruth_source:\nlast_verified:\n",
+            ),
+        )
+        _, payload = self.check()
+        issues = {item["issue"] for item in payload["warnings"]["freshness"]}
+        self.assertEqual(issues, {"pointer_missing_truth_source", "pointer_missing_last_verified"})
+
+    def test_expired_pointer_and_invalid_fact_lifetime_are_reported(self):
+        self.write(
+            "40-knowledge/concepts/Live State.md",
+            note_text(
+                "live-state", "concept", "Live State",
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+                extra=(
+                    "freshness: pointer\ntruth_source: https://example.com/live\n"
+                    "last_verified: 2020-01-01\nfreshness_window_days: 7\n"
+                    "valid_from: 2026-02-01\nvalid_until: 2026-01-01\n"
+                ),
+            ),
+        )
+        _, payload = self.check()
+        issues = {item["issue"] for item in payload["warnings"]["freshness"]}
+        self.assertIn("verification_expired", issues)
+        self.assertIn("valid_until_before_valid_from", issues)
+
+    def test_current_pointer_and_dated_snapshot_pass(self):
+        self.write(
+            "40-knowledge/concepts/Live State.md",
+            note_text(
+                "live-state", "concept", "Live State",
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+                extra=(
+                    f"freshness: pointer\ntruth_source: https://example.com/live\n"
+                    f"last_verified: {TODAY}\n"
+                ),
+            ),
+        )
+        self.write(
+            "40-knowledge/concepts/Snapshot.md",
+            note_text(
+                "snapshot", "concept", "Snapshot",
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+                extra=f"freshness: snapshot\nobserved: {TODAY}\n",
+            ),
+        )
+        _, payload = self.check()
+        self.assertEqual(payload["warnings"]["freshness"], [])
+
+
+class TypedRelationTests(VaultFixture):
+    def relation_note(self, filename, note_id, title, extra):
+        return self.write(
+            f"40-knowledge/concepts/{filename}.md",
+            note_text(
+                note_id, "concept", title,
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+                extra=extra,
+            ),
+        )
+
+    def findings(self):
+        return vault.typed_relation_findings(vault.scan_notes(self.root))
+
+    def test_valid_inverse_pair_passes(self):
+        self.relation_note(
+            "A", "a", "A", 'supports: ["[[40-knowledge/concepts/B]]"]\n'
+        )
+        self.relation_note(
+            "B", "b", "B", 'supported_by: ["[[40-knowledge/concepts/A]]"]\n'
+        )
+        errors, inverses = self.findings()
+        self.assertEqual(errors, [])
+        self.assertEqual(inverses, [])
+
+    def test_missing_inverse_is_warning_quality_finding(self):
+        self.relation_note(
+            "A", "a", "A", 'depends_on: ["[[40-knowledge/concepts/B]]"]\n'
+        )
+        self.relation_note("B", "b", "B", "")
+        errors, inverses = self.findings()
+        self.assertEqual(errors, [])
+        self.assertEqual(inverses[0]["missing_inverse"], "required_by")
+
+    def test_dangling_self_and_supersession_cycle_are_errors(self):
+        self.relation_note(
+            "A", "a", "A",
+            'supersedes: ["[[40-knowledge/concepts/B]]"]\n'
+            'contradicts: ["[[40-knowledge/concepts/A]]"]\n'
+            'supports: ["[[40-knowledge/concepts/Missing]]"]\n',
+        )
+        self.relation_note(
+            "B", "b", "B", 'supersedes: ["[[40-knowledge/concepts/A]]"]\n'
+        )
+        errors, _ = self.findings()
+        issues = {item["issue"] for item in errors}
+        self.assertEqual(issues, {"dangling_target", "self_relation", "supersession_cycle"})
+
+
 class NewNoteTests(VaultFixture):
     def create(self, **kwargs):
         options = {"note_type": "concept", "title": "Spaced Repetition", "folder": None,

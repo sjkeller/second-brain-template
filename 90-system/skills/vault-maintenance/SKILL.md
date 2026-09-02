@@ -32,6 +32,11 @@ is material, also read [references/schema.md](references/schema.md). Add only me
 lateral links. Hand new captures to `vault-capture`, Inbox filing to `vault-triage`, and
 periodic review to `vault-review`.
 
+For current facts, also read [[90-system/Freshness Policy]]. Treat freshness findings as
+review prompts: re-verify, convert to a truth pointer, or preserve the value in a dated
+snapshot. Typed-link inverse warnings require judgement; never invent an inverse merely to
+silence the checker.
+
 ## Report
 
 ```
