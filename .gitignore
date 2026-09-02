@@ -1,5 +1,15 @@
 __pycache__/
 *.py[cod]
+# Local Obsidian UI, account, and third-party state. Shared vault behavior is
+# explicitly allowlisted by the committed files under `.obsidian`.
+.obsidian/appearance.json
+.obsidian/bookmarks.json
+.obsidian/command-palette.json
+.obsidian/core-plugins-migration.json
+.obsidian/hotkeys.json
+.obsidian/plugins/
+.obsidian/sync.json
+.obsidian/themes/
 .obsidian/workspace*.json
 .trash/
 

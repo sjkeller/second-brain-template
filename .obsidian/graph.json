@@ -1,0 +1,100 @@
+{
+  "collapse-filter": false,
+  "search": "-path:\"90-system/templates\" -path:\"90-system/indexes\"",
+  "showTags": false,
+  "showAttachments": false,
+  "hideUnresolved": true,
+  "showOrphans": true,
+  "collapse-color-groups": false,
+  "colorGroups": [
+    {
+      "query": "[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 15119440
+      }
+    },
+    {
+      "query": "path:\"90-system/skills\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 2799529
+      }
+    },
+    {
+      "query": "path:\"00-inbox\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 15105570
+      }
+    },
+    {
+      "query": "path:\"10-projects\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 5017087
+      }
+    },
+    {
+      "query": "path:\"20-areas\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 4826733
+      }
+    },
+    {
+      "query": "path:\"30-resources\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 3453888
+      }
+    },
+    {
+      "query": "path:\"40-knowledge\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 10186239
+      }
+    },
+    {
+      "query": "path:\"50-journal\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 7901340
+      }
+    },
+    {
+      "query": "path:\"60-decisions\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 14703224
+      }
+    },
+    {
+      "query": "path:\"80-archive\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 8226199
+      }
+    },
+    {
+      "query": "path:\"90-system\" -path:\"90-system/skills\" -[type:moc]",
+      "color": {
+        "a": 1,
+        "rgb": 9345711
+      }
+    }
+  ],
+  "collapse-display": false,
+  "showArrow": true,
+  "textFadeMultiplier": 0.25,
+  "nodeSizeMultiplier": 1,
+  "lineSizeMultiplier": 1,
+  "collapse-forces": false,
+  "centerStrength": 0.4,
+  "repelStrength": 12,
+  "linkStrength": 1,
+  "linkDistance": 200,
+  "scale": 1,
+  "close": false
+}
