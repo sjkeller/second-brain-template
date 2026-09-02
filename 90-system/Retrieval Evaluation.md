@@ -33,7 +33,9 @@ Copy `90-system/evals/retrieval-cases.example.jsonl` to the ignored default path
   matter. Do not manufacture easy cases from note titles alone.
 
 Both the real case set and generated reports are ignored by Git because even a query can
-reveal private interests. The tracked example is fictional template data.
+reveal private interests. The tracked example is fictional template data. Report writes
+are restricted to `90-system/evals/*.json`, so a mistyped output path cannot overwrite a
+note elsewhere in the vault.
 
 ## Run the baseline
 

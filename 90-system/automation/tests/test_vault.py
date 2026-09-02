@@ -413,6 +413,27 @@ class RetrievalEvaluationTests(VaultFixture):
         self.assertIn("semantic_gate", report)
         self.assertTrue(report["threshold"]["passed"])
 
+    def test_report_cannot_overwrite_an_arbitrary_vault_note(self):
+        self.write_cases([{
+            "query": "retrieval",
+            "expected": "40-knowledge/concepts/Retrieval.md",
+        }])
+        home = self.root / "Home.md"
+        before = home.read_text(encoding="utf-8")
+        code, payload = run(
+            vault.command_eval_retrieval,
+            self.root,
+            "90-system/evals/retrieval-cases.jsonl",
+            (5,),
+            False,
+            "Home.md",
+            None,
+            True,
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "report_path_not_allowed")
+        self.assertEqual(home.read_text(encoding="utf-8"), before)
+
     def test_bad_cases_fail_without_running(self):
         self.write_cases([
             {"id": "bad", "query": "", "expected": "Missing.md"},
@@ -1092,6 +1113,34 @@ class SafeMergeTests(VaultFixture):
         )
         findings = vault.redirect_findings(vault.scan_notes(self.root))
         self.assertTrue(any(item["issue"] == "redirect_chain" for item in findings))
+
+    def test_redirect_title_may_match_its_canonical_note(self):
+        self.write(
+            "00-inbox/Old Retrieval.md",
+            note_text(
+                "old-retrieval", "redirect", "Retrieval",
+                "[[40-knowledge/concepts/Retrieval]]", status="superseded",
+                extra="redirect_to: '[[40-knowledge/concepts/Retrieval]]'\n",
+            ),
+        )
+        code, payload = run(vault.command_check, self.root, True, False, True, 180, 60)
+        self.assertEqual(code, 0, payload)
+        self.assertEqual(payload["summary"]["duplicate_titles"], 0)
+
+    def test_merge_refuses_to_create_a_redirect_chain(self):
+        self.write(
+            "00-inbox/Old Build Search.md",
+            note_text(
+                "old-build-search", "redirect", "Old Build Search",
+                "[[10-projects/Build Search]]", status="superseded",
+                extra="redirect_to: '[[10-projects/Build Search]]'\n",
+            ),
+        )
+        self.write_merged_body()
+        code, payload = self.preview()
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "retired_note_has_inbound_redirects")
+        self.assertEqual(payload["redirects"], ["00-inbox/Old Build Search.md"])
 
 
 class ReportingTests(VaultFixture):

@@ -47,7 +47,9 @@ explicitly resolving or accepting every reported item.
   `type: redirect` / `status: superseded`, and points to the canonical note with
   `redirect_to`.
 - Existing backlinks are not rewritten. They continue to resolve through the retired
-  path. The checker rejects broken, self-targeting, chained, or cyclic redirects.
+  path. The checker rejects broken, self-targeting, chained, or cyclic redirects. A merge
+  also refuses to retire a note that already has inbound redirects, because doing so would
+  create a redirect chain.
 - Canonical-only metadata wins. Retired-only or conflicting metadata is reported rather
   than guessed. Typed relations and freshness declarations are removed from the redirect;
   incorporate any still-valid claims into the reviewed canonical draft and metadata.

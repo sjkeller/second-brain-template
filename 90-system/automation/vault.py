@@ -70,6 +70,7 @@ GENERATED_JSON = "90-system/indexes/vault-index.json"
 CACHE_RELATIVE = "90-system/indexes/.vault-cache.sqlite3"
 RETRIEVAL_CASES_RELATIVE = "90-system/evals/retrieval-cases.jsonl"
 RETRIEVAL_REPORT_RELATIVE = "90-system/evals/retrieval-report.json"
+RETRIEVAL_EVAL_PREFIX = "90-system/evals/"
 RETRIEVAL_EVAL_SCHEMA_VERSION = 1
 SEMANTIC_TRIAL_MIN_CASES = 20
 SEMANTIC_TRIAL_OVERALL_RECALL_AT_5 = 0.85
@@ -1328,6 +1329,7 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         relevant = [
             path for path in paths
             if path not in ROOT_EXEMPT and not path.startswith("90-system/templates/")
+            and str(notes_by_path[path].metadata.get("type", "")).strip() != "redirect"
         ]
         if len(relevant) > 1:
             duplicate_titles.append({"title": key, "paths": relevant})
@@ -1798,6 +1800,13 @@ def command_eval_retrieval(
             emit({"error": "report_outside_vault", "requested": report_path}, compact)
             return 2
         destination, report_relative = report_resolved
+        if not report_relative.startswith(RETRIEVAL_EVAL_PREFIX) or destination.suffix.casefold() != ".json":
+            emit({
+                "error": "report_path_not_allowed",
+                "requested": report_path,
+                "allowed": f"{RETRIEVAL_EVAL_PREFIX}*.json",
+            }, compact)
+            return 2
         destination.parent.mkdir(parents=True, exist_ok=True)
         payload["report"] = report_relative
         destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -2339,11 +2348,15 @@ def merge_input_note(root: Path, requested: str, role: str) -> tuple[tuple[Path,
     raw = path.read_text(encoding="utf-8-sig")
     note = build_note(path, relative, raw, path.stat().st_mtime_ns, path.stat().st_size)
     note_type = str(note.metadata.get("type", "")).strip()
+    missing = [key for key in REQUIRED_KEYS if not str(note.metadata.get(key, "")).strip()]
+    if missing:
+        return None, {"error": "note_schema_invalid", "role": role, "path": relative, "missing": missing}
     if (
         relative in ROOT_EXEMPT
         or "/" not in relative
         or relative.startswith(MERGE_EXCLUDED_PREFIXES)
         or note_type in MERGE_EXCLUDED_TYPES
+        or str(note.metadata.get("status", "")).strip() == "immutable"
     ):
         return None, {"error": "note_not_mergeable", "role": role, "path": relative, "type": note_type}
     return (path, relative, note, raw), None
@@ -2439,6 +2452,24 @@ def build_merge_plan(
 
     all_notes = scan_notes(root)
     by_path, by_stem = note_maps(all_notes)
+
+    inbound_redirects: list[str] = []
+    for candidate in all_notes:
+        if str(candidate.metadata.get("type", "")).strip() != "redirect":
+            continue
+        targets = extract_links(" ".join(metadata_values(candidate.metadata.get("redirect_to"))))
+        if len(targets) != 1:
+            continue
+        resolved_target = resolve_target(targets[0], by_path, by_stem)
+        if resolved_target and resolved_target.path == retired_relative:
+            inbound_redirects.append(candidate.path)
+    if inbound_redirects:
+        return None, {
+            "error": "retired_note_has_inbound_redirects",
+            "retired": retired_relative,
+            "redirects": sorted(inbound_redirects, key=str.casefold),
+            "hint": "Choose the final canonical target or resolve these redirects first.",
+        }
 
     def link_identity(target_value: str) -> str:
         resolved_target = resolve_target(target_value, by_path, by_stem)
