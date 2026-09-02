@@ -3,7 +3,7 @@ id: moc-automation
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 tags:
   - system/moc
   - system/automation
@@ -30,8 +30,11 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 - `python3 90-system/automation/vault.py related "path.md" --depth 2` — resolved wikilink
   neighbours.
 - `... eval-retrieval` — run the production ranker against the ignored private JSONL case
-  set and report recall@k, MRR, and the non-enabling semantic-trial gate. See
+  set and report note/evidence recall, forbidden hits, context bytes, MRR, and the
+  non-enabling semantic-trial gate. See
   [[90-system/Retrieval Evaluation|Retrieval Evaluation]].
+- `... obsidian-uri --file "path.md"` or `--search "terms"` — print a percent-encoded,
+  non-mutating Obsidian URI. It never launches the application or exposes write actions.
 
 ## Author
 
@@ -52,6 +55,11 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 - `... stale --days 180` — notes whose `updated` has aged out.
 - `... tags` — the tag inventory, with single-use tags called out.
 - `... index` — writes [[90-system/indexes/Vault Index|Vault Index]] and its JSON twin.
+- `... readability` — warning-only structural readability diagnostics for durable notes;
+  use `--path-prefix` to inspect a narrow scope.
+- `... eval-usability` — aggregate private paired before/after human task observations and
+  apply the predeclared rollout gate in
+  [[90-system/Human Usability Evaluation|Human Usability Evaluation]].
 
 ## Validate
 
@@ -62,7 +70,13 @@ Windows installation that exposes Python only through its launcher, use `py` ins
   - Warnings: missing frontmatter keys, type/folder placement, notes with no MOC edge,
     orphans, staleness, tag sprawl, raw sources that have not been sealed yet, declared
     freshness problems, and typed relations whose inverse declaration is missing.
+  - `ai_review: pending` must have the visible AI-draft warning callout; other values are
+    rejected as warnings. A non-empty `review_on` must be an ISO date.
   - `--strict` fails on warnings too; `--quiet` prints the summary and errors only.
+
+Raw-source payload text remains indexed for explicit retrieval, but it cannot contribute
+wikilinks, headings, or checkbox tasks to structural reports. Only metadata and Markdown
+outside the untrusted payload boundary can do that.
 - `... cache` / `cache --rebuild` — inspect or discard the retrieval cache.
 - `python3 -m unittest discover -s 90-system/automation/tests` — the test suite.
 

@@ -50,4 +50,11 @@ revision as a new raw source linked with `supersedes`, never by re-sealing the o
 The hash proves local payload stability after sealing. It does not prove authenticity,
 completeness, correct attribution, or that a remote URL has not changed.
 
+The payload remains searchable evidence, but `vault.py` excludes it from structural link,
+heading, and task extraction. Source text such as `[[a link]]`, `- [ ] a command`, or a
+Markdown heading therefore cannot create graph edges, task-list entries, or navigation
+structure. Links and tasks written outside the payload remain ordinary trusted vault
+structure. Duplicate or malformed sentinels still fail integrity validation rather than
+changing the boundary.
+
 Related: [[90-system/Vault Contract|Vault Contract]] · [[90-system/Link Policy|Link Policy]] · [[90-system/automation/MOC - Automation|Automation]]

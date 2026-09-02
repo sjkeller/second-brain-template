@@ -1,2 +1,2 @@
-{"id":"known-link-policy","query":"how are note relationships checked","expected":"90-system/Link Policy.md","category":"known-item"}
-{"id":"filtered-system-note","query":"retrieval narrows context","expected":["90-system/Retrieval Guide.md"],"type":"system","tags":["system/agent"],"category":"filtered"}
+{"id":"known-link-policy","query":"how are note relationships checked","expected":"90-system/Link Policy.md","evidence":[{"path":"90-system/Link Policy.md","heading":"Typed relations"}],"forbidden":["90-system/Design Rationale.md"],"category":"known-item"}
+{"id":"filtered-system-note","query":"retrieval narrows context","expected":["90-system/Retrieval Guide.md"],"evidence":[{"path":"90-system/Retrieval Guide.md","heading":"Deterministic first pass"}],"type":"system","tags":["system/agent"],"category":"filtered"}

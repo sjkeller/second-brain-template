@@ -29,9 +29,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from difflib import SequenceMatcher
 from pathlib import Path
+from statistics import median
 from typing import Any, Iterable, Iterator
+from urllib.parse import quote, urlencode
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 WIKILINK_RE = re.compile(r"!?\[\[([^\]]+)\]\]")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
@@ -71,7 +73,14 @@ CACHE_RELATIVE = "90-system/indexes/.vault-cache.sqlite3"
 RETRIEVAL_CASES_RELATIVE = "90-system/evals/retrieval-cases.jsonl"
 RETRIEVAL_REPORT_RELATIVE = "90-system/evals/retrieval-report.json"
 RETRIEVAL_EVAL_PREFIX = "90-system/evals/"
-RETRIEVAL_EVAL_SCHEMA_VERSION = 1
+RETRIEVAL_EVAL_SCHEMA_VERSION = 2
+USABILITY_CASES_RELATIVE = "90-system/evals/usability-cases.jsonl"
+USABILITY_REPORT_RELATIVE = "90-system/evals/usability-report.json"
+USABILITY_EVAL_SCHEMA_VERSION = 1
+USABILITY_MIN_PAIRED_CASES = 10
+USABILITY_MIN_CAPTURE_CASES = 2
+USABILITY_TARGET_TIME_IMPROVEMENT = 0.20
+USABILITY_MAX_CAPTURE_REGRESSION = 0.10
 SEMANTIC_TRIAL_MIN_CASES = 20
 SEMANTIC_TRIAL_OVERALL_RECALL_AT_5 = 0.85
 SEMANTIC_TRIAL_CATEGORY_MIN_CASES = 5
@@ -144,10 +153,23 @@ ERROR_KEYS = (
 WARNING_KEYS = (
     "metadata_issues", "placement", "moc_coverage", "orphans", "stale",
     "tag_vocabulary", "raw_source_drafts", "freshness", "typed_relation_inverses",
+    "ai_review",
 )
 
 DEFAULT_STALE_DAYS = 180
 DEFAULT_MAX_TAGS = 60
+DEFAULT_READABILITY_MIN_WORDS = 250
+DEFAULT_READABILITY_MAX_LEAD_WORDS = 120
+DEFAULT_READABILITY_MAX_PARAGRAPH_WORDS = 120
+READABILITY_TYPES = {
+    "project", "area", "resource", "source", "concept", "person", "organization",
+    "decision", "note",
+}
+LEAD_LABELS = {
+    "summary", "current status", "decision", "takeaway", "at a glance", "claim",
+    "outcome", "what it is", "who",
+}
+AI_REVIEW_MARKER = "[!warning] ai draft"
 
 # German spellings-out, applied before Unicode decomposition when building an id.
 TRANSLITERATIONS = {
@@ -364,8 +386,30 @@ def metadata_text(metadata: dict[str, Any]) -> str:
     return " ".join(values)
 
 
+def raw_source_structural_body(body: str) -> str:
+    """Exclude untrusted payload from links, headings, and task extraction.
+
+    The first begin marker and last end marker are template-controlled boundaries. Using
+    the widest region is fail-safe even when hostile payload text repeats a sentinel; the
+    immutable-integrity check separately rejects duplicate or malformed boundaries.
+    """
+    start = body.find(RAW_SOURCE_BEGIN)
+    if start < 0:
+        return ""
+    end = body.rfind(RAW_SOURCE_END)
+    prefix = body[:start + len(RAW_SOURCE_BEGIN)]
+    if end <= start:
+        return prefix
+    return prefix + "\n" + body[end:]
+
+
 def build_note(path: Path, relative: str, raw: str, mtime_ns: int, size: int) -> Note:
     metadata, body = parse_frontmatter(raw)
+    is_raw_source = str(metadata.get("type", "")).strip() == "raw-source"
+    structural_body = raw_source_structural_body(body) if is_raw_source else body
+    structural_links_text = (
+        metadata_text(metadata) + "\n" + structural_body if is_raw_source else raw
+    )
     title = extract_title(body, path.stem)
     title_tokens = Counter(tokenize(title))
     meta_tokens = Counter(tokenize(metadata_text(metadata)))
@@ -380,9 +424,9 @@ def build_note(path: Path, relative: str, raw: str, mtime_ns: int, size: int) ->
         title=title,
         metadata=metadata,
         body=body,
-        links=extract_links(raw),
-        headings=[match.group(2).strip() for match in HEADING_RE.finditer(body)],
-        tasks=extract_tasks(body),
+        links=extract_links(structural_links_text),
+        headings=[match.group(2).strip() for match in HEADING_RE.finditer(structural_body)],
+        tasks=extract_tasks(structural_body),
         word_count=sum(body_tokens.values()),
         sha256=hashlib.sha256(raw.encode("utf-8")).hexdigest(),
         mtime_ns=mtime_ns,
@@ -1262,6 +1306,7 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
     raw_source_integrity: list[dict[str, str]] = []
     raw_source_drafts: list[dict[str, str]] = []
     freshness: list[dict[str, Any]] = []
+    ai_review_findings: list[dict[str, str]] = []
 
     for note in notes:
         note_id = str(note.metadata.get("id", "")).strip()
@@ -1277,6 +1322,24 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         missing = [key for key in REQUIRED_KEYS if not str(note.metadata.get(key, "")).strip()]
         if missing:
             metadata_missing.append({"path": note.path, "missing": missing})
+
+        review_on = str(note.metadata.get("review_on", "")).strip()
+        if review_on and parse_date(review_on) is None:
+            metadata_missing.append({"path": note.path, "invalid_review_on": review_on})
+
+        ai_review = str(note.metadata.get("ai_review", "")).strip()
+        if ai_review and ai_review != "pending":
+            ai_review_findings.append(
+                {"path": note.path, "issue": "invalid_state", "value": ai_review}
+            )
+        elif ai_review == "pending":
+            _, review_body = parse_frontmatter(
+                (root / note.path).read_text(encoding="utf-8-sig")
+            )
+            if AI_REVIEW_MARKER not in review_body.casefold():
+                ai_review_findings.append(
+                    {"path": note.path, "issue": "missing_visible_callout"}
+                )
 
         note_type = str(note.metadata.get("type", "")).strip()
         if note_type and note_type not in KNOWN_TYPES:
@@ -1368,6 +1431,7 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         "raw_source_drafts": raw_source_drafts,
         "freshness": freshness,
         "typed_relation_inverses": typed_relation_inverses,
+        "ai_review": ai_review_findings,
     }
 
     error_count = sum(len(findings[key]) for key in ERROR_KEYS)
@@ -1542,6 +1606,12 @@ def command_query(root: Path, query: str, options: QueryOptions, compact: bool) 
 
 
 @dataclass(frozen=True)
+class EvidenceTarget:
+    path: str
+    heading: str
+
+
+@dataclass(frozen=True)
 class RetrievalCase:
     case_id: str
     query: str
@@ -1549,6 +1619,8 @@ class RetrievalCase:
     types: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     category: str = "default"
+    evidence: tuple[EvidenceTarget, ...] = ()
+    forbidden: tuple[str, ...] = ()
 
 
 def string_tuple(value: Any) -> tuple[str, ...] | None:
@@ -1590,6 +1662,8 @@ def load_retrieval_cases(root: Path, requested: str) -> tuple[list[RetrievalCase
         expected_values = string_tuple(item.get("expected"))
         types = string_tuple(item.get("type", []))
         tags = string_tuple(item.get("tags", []))
+        forbidden_values = string_tuple(item.get("forbidden", []))
+        evidence_values = item.get("evidence", [])
         case_id = str(item.get("id", f"line-{line_number}")).strip()
         category = str(item.get("category", "default")).strip() or "default"
         if not isinstance(query, str) or not query.strip():
@@ -1600,6 +1674,12 @@ def load_retrieval_cases(root: Path, requested: str) -> tuple[list[RetrievalCase
             continue
         if types is None or tags is None:
             errors.append({"line": line_number, "error": "filters_must_be_strings"})
+            continue
+        if forbidden_values is None:
+            errors.append({"line": line_number, "error": "forbidden_must_be_strings"})
+            continue
+        if not isinstance(evidence_values, list):
+            errors.append({"line": line_number, "error": "evidence_must_be_array"})
             continue
         if not case_id or case_id in seen_ids:
             errors.append({"line": line_number, "error": "case_id_missing_or_duplicate", "id": case_id})
@@ -1626,6 +1706,90 @@ def load_retrieval_cases(root: Path, requested: str) -> tuple[list[RetrievalCase
         if invalid_expected:
             continue
 
+        forbidden_paths: list[str] = []
+        invalid_case = False
+        for forbidden in forbidden_values:
+            forbidden_resolved = resolve_vault_path(root, forbidden)
+            if forbidden_resolved is None:
+                errors.append({
+                    "line": line_number,
+                    "error": "forbidden_outside_vault",
+                    "forbidden": forbidden,
+                })
+                invalid_case = True
+                continue
+            forbidden_path, forbidden_relative = forbidden_resolved
+            if not forbidden_path.is_file() or forbidden_path.suffix.casefold() != ".md":
+                errors.append({
+                    "line": line_number,
+                    "error": "forbidden_note_not_found",
+                    "forbidden": forbidden_relative,
+                })
+                invalid_case = True
+                continue
+            if forbidden_relative in expected_paths:
+                errors.append({
+                    "line": line_number,
+                    "error": "forbidden_note_is_expected",
+                    "forbidden": forbidden_relative,
+                })
+                invalid_case = True
+                continue
+            forbidden_paths.append(forbidden_relative)
+
+        evidence_targets: list[EvidenceTarget] = []
+        for evidence in evidence_values:
+            if not isinstance(evidence, dict):
+                errors.append({"line": line_number, "error": "evidence_must_be_object"})
+                invalid_case = True
+                continue
+            evidence_path_value = evidence.get("path")
+            evidence_heading = evidence.get("heading")
+            if not isinstance(evidence_path_value, str) or not evidence_path_value.strip():
+                errors.append({"line": line_number, "error": "evidence_path_required"})
+                invalid_case = True
+                continue
+            if not isinstance(evidence_heading, str) or not evidence_heading.strip():
+                errors.append({"line": line_number, "error": "evidence_heading_required"})
+                invalid_case = True
+                continue
+            evidence_resolved = resolve_vault_path(root, evidence_path_value)
+            if evidence_resolved is None:
+                errors.append({
+                    "line": line_number,
+                    "error": "evidence_outside_vault",
+                    "evidence": evidence_path_value,
+                })
+                invalid_case = True
+                continue
+            evidence_path, evidence_relative = evidence_resolved
+            if evidence_relative not in expected_paths:
+                errors.append({
+                    "line": line_number,
+                    "error": "evidence_path_not_expected",
+                    "evidence": evidence_relative,
+                })
+                invalid_case = True
+                continue
+            _, evidence_body = parse_frontmatter(evidence_path.read_text(encoding="utf-8-sig"))
+            available_headings = {
+                match.group(2).strip().rstrip("#").strip().casefold()
+                for match in HEADING_RE.finditer(evidence_body)
+            }
+            clean_heading = evidence_heading.strip().lstrip("#").strip()
+            if clean_heading.casefold() not in available_headings:
+                errors.append({
+                    "line": line_number,
+                    "error": "evidence_heading_not_found",
+                    "evidence": evidence_relative,
+                    "heading": clean_heading,
+                })
+                invalid_case = True
+                continue
+            evidence_targets.append(EvidenceTarget(evidence_relative, clean_heading))
+        if invalid_case:
+            continue
+
         seen_ids.add(case_id)
         cases.append(RetrievalCase(
             case_id=case_id,
@@ -1634,6 +1798,8 @@ def load_retrieval_cases(root: Path, requested: str) -> tuple[list[RetrievalCase
             types=types,
             tags=tags,
             category=category,
+            evidence=tuple(evidence_targets),
+            forbidden=tuple(dict.fromkeys(forbidden_paths)),
         ))
     if not cases and not errors:
         errors.append({"error": "no_cases", "path": relative})
@@ -1652,10 +1818,40 @@ def retrieval_metrics(case_results: list[dict[str, Any]], k_values: tuple[int, .
         1.0 / result["first_relevant_rank"] if result["first_relevant_rank"] else 0.0
         for result in case_results
     ]
+    evidence_results = [result for result in case_results if result["evidence_count"]]
+    forbidden_results = [result for result in case_results if result["forbidden"]]
+    evidence_recall_at_k = {
+        str(k): round(
+            sum(result["evidence_recall_at_k"][str(k)] for result in evidence_results)
+            / len(evidence_results),
+            6,
+        ) if evidence_results else None
+        for k in k_values
+    }
+    forbidden_hit_rate_at_k = {
+        str(k): round(
+            sum(bool(result["forbidden_hits_at_k"][str(k)]) for result in forbidden_results)
+            / len(forbidden_results),
+            6,
+        ) if forbidden_results else None
+        for k in k_values
+    }
+    mean_context_bytes_at_k = {
+        str(k): round(
+            sum(result["context_bytes_at_k"][str(k)] for result in case_results) / count,
+            2,
+        ) if count else 0.0
+        for k in k_values
+    }
     return {
         "case_count": count,
         "recall_at_k": recall_at_k,
         "mrr": round(sum(reciprocal_ranks) / count, 6) if count else 0.0,
+        "evidence_case_count": len(evidence_results),
+        "evidence_recall_at_k": evidence_recall_at_k,
+        "forbidden_case_count": len(forbidden_results),
+        "forbidden_hit_rate_at_k": forbidden_hit_rate_at_k,
+        "mean_context_bytes_at_k": mean_context_bytes_at_k,
     }
 
 
@@ -1728,16 +1924,41 @@ def evaluate_retrieval(
             excerpt_chars=0,
         ))
         paths = [note.path for _, note in ranked]
+        sizes = [note.size for _, note in ranked]
         expected = set(case.expected)
         relevant_ranks = [index for index, path in enumerate(paths, start=1) if path in expected]
         recall = {
             str(k): round(sum(path in expected for path in paths[:k]) / len(expected), 6)
             for k in k_values
         }
+        evidence_recall = {
+            str(k): round(
+                sum(target.path in paths[:k] for target in case.evidence) / len(case.evidence),
+                6,
+            ) if case.evidence else None
+            for k in k_values
+        }
+        forbidden_hits = {
+            str(k): sorted(set(paths[:k]).intersection(case.forbidden))
+            for k in k_values
+        }
+        context_bytes = {
+            str(k): sum(sizes[:k])
+            for k in k_values
+        }
         case_results.append({
             "id": case.case_id,
             "category": case.category,
             "expected": list(case.expected),
+            "evidence": [
+                {"path": target.path, "heading": target.heading}
+                for target in case.evidence
+            ],
+            "evidence_count": len(case.evidence),
+            "evidence_recall_at_k": evidence_recall,
+            "forbidden": list(case.forbidden),
+            "forbidden_hits_at_k": forbidden_hits,
+            "context_bytes_at_k": context_bytes,
             "first_relevant_rank": min(relevant_ranks) if relevant_ranks else None,
             "recall_at_k": recall,
             "top_paths": paths,
@@ -1812,6 +2033,326 @@ def command_eval_retrieval(
         destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     emit(payload, compact)
     return 0 if passed else 1
+
+
+# ---------------------------------------------------------------------------
+# human usability evaluation
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class UsabilityObservation:
+    success: bool
+    evidence_found: bool
+    seconds: float
+    files_opened: int
+
+
+@dataclass(frozen=True)
+class UsabilityCase:
+    case_id: str
+    task: str
+    category: str
+    baseline: UsabilityObservation
+    candidate: UsabilityObservation | None = None
+
+
+def parse_usability_observation(
+    value: Any, line_number: int, stage: str
+) -> tuple[UsabilityObservation | None, dict[str, Any] | None]:
+    if not isinstance(value, dict):
+        return None, {"line": line_number, "error": f"{stage}_must_be_object"}
+    success = value.get("success")
+    evidence_found = value.get("evidence_found")
+    seconds = value.get("seconds")
+    files_opened = value.get("files_opened")
+    if not isinstance(success, bool):
+        return None, {"line": line_number, "error": f"{stage}_success_must_be_boolean"}
+    if not isinstance(evidence_found, bool):
+        return None, {
+            "line": line_number,
+            "error": f"{stage}_evidence_found_must_be_boolean",
+        }
+    if (
+        isinstance(seconds, bool)
+        or not isinstance(seconds, (int, float))
+        or not math.isfinite(float(seconds))
+        or float(seconds) < 0
+    ):
+        return None, {"line": line_number, "error": f"{stage}_seconds_must_be_nonnegative"}
+    if isinstance(files_opened, bool) or not isinstance(files_opened, int) or files_opened < 0:
+        return None, {
+            "line": line_number,
+            "error": f"{stage}_files_opened_must_be_nonnegative_integer",
+        }
+    return UsabilityObservation(
+        success=success,
+        evidence_found=evidence_found,
+        seconds=float(seconds),
+        files_opened=files_opened,
+    ), None
+
+
+def load_usability_cases(
+    root: Path, requested: str
+) -> tuple[list[UsabilityCase], list[dict[str, Any]], str | None]:
+    resolved = resolve_vault_path(root, requested)
+    if resolved is None:
+        return [], [{"error": "outside_vault", "requested": requested}], None
+    path, relative = resolved
+    if not relative.startswith(RETRIEVAL_EVAL_PREFIX) or path.suffix.casefold() != ".jsonl":
+        return [], [{"error": "cases_path_not_allowed", "path": relative}], relative
+    if not path.is_file():
+        return [], [{"error": "cases_not_found", "path": relative}], relative
+
+    cases: list[UsabilityCase] = []
+    errors: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for line_number, raw_line in enumerate(
+        path.read_text(encoding="utf-8-sig").splitlines(), start=1
+    ):
+        if not raw_line.strip():
+            continue
+        try:
+            item = json.loads(raw_line)
+        except json.JSONDecodeError as exc:
+            errors.append({"line": line_number, "error": "invalid_json", "detail": exc.msg})
+            continue
+        if not isinstance(item, dict):
+            errors.append({"line": line_number, "error": "case_must_be_object"})
+            continue
+        case_id = str(item.get("id", f"line-{line_number}")).strip()
+        task = item.get("task")
+        category = (str(item.get("category", "find")).strip() or "find").casefold()
+        if not case_id or case_id in seen_ids:
+            errors.append({
+                "line": line_number,
+                "error": "case_id_missing_or_duplicate",
+                "id": case_id,
+            })
+            continue
+        if not isinstance(task, str) or not task.strip():
+            errors.append({"line": line_number, "error": "task_required"})
+            continue
+        baseline, baseline_error = parse_usability_observation(
+            item.get("baseline"), line_number, "baseline"
+        )
+        if baseline_error:
+            errors.append(baseline_error)
+            continue
+        candidate_value = item.get("candidate")
+        candidate: UsabilityObservation | None = None
+        if candidate_value is not None:
+            candidate, candidate_error = parse_usability_observation(
+                candidate_value, line_number, "candidate"
+            )
+            if candidate_error:
+                errors.append(candidate_error)
+                continue
+        assert baseline is not None
+        seen_ids.add(case_id)
+        cases.append(UsabilityCase(case_id, task.strip(), category, baseline, candidate))
+    if not cases and not errors:
+        errors.append({"error": "no_cases", "path": relative})
+    return cases, errors, relative
+
+
+def usability_stage_metrics(observations: list[UsabilityObservation]) -> dict[str, Any]:
+    count = len(observations)
+    if not count:
+        return {
+            "case_count": 0,
+            "success_rate": 0.0,
+            "evidence_found_rate": 0.0,
+            "median_seconds": None,
+            "median_files_opened": None,
+        }
+    return {
+        "case_count": count,
+        "success_rate": round(sum(item.success for item in observations) / count, 6),
+        "evidence_found_rate": round(
+            sum(item.evidence_found for item in observations) / count, 6
+        ),
+        "median_seconds": round(float(median(item.seconds for item in observations)), 3),
+        "median_files_opened": round(
+            float(median(item.files_opened for item in observations)), 3
+        ),
+    }
+
+
+def usability_gate(
+    paired: list[UsabilityCase],
+    minimum_cases: int,
+    minimum_capture_cases: int,
+    target_time_improvement: float,
+    max_capture_regression: float,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    baseline = usability_stage_metrics([case.baseline for case in paired])
+    candidate = usability_stage_metrics([
+        case.candidate for case in paired if case.candidate is not None
+    ])
+    capture_cases = [case for case in paired if case.category.casefold() == "capture"]
+    capture_baseline = usability_stage_metrics([case.baseline for case in capture_cases])
+    capture_candidate = usability_stage_metrics([
+        case.candidate for case in capture_cases if case.candidate is not None
+    ])
+
+    baseline_seconds = baseline["median_seconds"]
+    candidate_seconds = candidate["median_seconds"]
+    time_improvement = None
+    if baseline_seconds is not None and candidate_seconds is not None and baseline_seconds > 0:
+        time_improvement = round((baseline_seconds - candidate_seconds) / baseline_seconds, 6)
+    capture_regression = None
+    capture_baseline_seconds = capture_baseline["median_seconds"]
+    capture_candidate_seconds = capture_candidate["median_seconds"]
+    if (
+        capture_baseline_seconds is not None
+        and capture_candidate_seconds is not None
+        and capture_baseline_seconds > 0
+    ):
+        capture_regression = round(
+            (capture_candidate_seconds - capture_baseline_seconds) / capture_baseline_seconds,
+            6,
+        )
+
+    evidence_sufficient = (
+        len(paired) >= minimum_cases and len(capture_cases) >= minimum_capture_cases
+    )
+    success_not_regressed = candidate["success_rate"] >= baseline["success_rate"]
+    evidence_not_regressed = (
+        candidate["evidence_found_rate"] >= baseline["evidence_found_rate"]
+    )
+    time_target_met = (
+        time_improvement is not None and time_improvement >= target_time_improvement
+    )
+    capture_limit_met = (
+        capture_regression is not None and capture_regression <= max_capture_regression
+    )
+    rollout_supported = all((
+        evidence_sufficient,
+        success_not_regressed,
+        evidence_not_regressed,
+        time_target_met,
+        capture_limit_met,
+    ))
+    reasons: list[str] = []
+    if len(paired) < minimum_cases:
+        reasons.append("insufficient_paired_cases")
+    if len(capture_cases) < minimum_capture_cases:
+        reasons.append("insufficient_capture_cases")
+    if not success_not_regressed:
+        reasons.append("success_rate_regressed")
+    if not evidence_not_regressed:
+        reasons.append("evidence_find_rate_regressed")
+    if not time_target_met:
+        reasons.append("time_improvement_target_not_met")
+    if not capture_limit_met:
+        reasons.append("capture_time_limit_not_met")
+    if rollout_supported:
+        reasons.append("measured_usability_gate_passed")
+    gate = {
+        "rollout_supported": rollout_supported,
+        "evidence_sufficient": evidence_sufficient,
+        "paired_cases": len(paired),
+        "capture_cases": len(capture_cases),
+        "time_improvement": time_improvement,
+        "capture_time_regression": capture_regression,
+        "success_not_regressed": success_not_regressed,
+        "evidence_not_regressed": evidence_not_regressed,
+        "criteria": {
+            "minimum_paired_cases": minimum_cases,
+            "minimum_capture_cases": minimum_capture_cases,
+            "target_time_improvement": target_time_improvement,
+            "maximum_capture_time_regression": max_capture_regression,
+        },
+        "reasons": reasons,
+    }
+    return baseline, candidate, gate
+
+
+def command_eval_usability(
+    root: Path,
+    requested_cases: str,
+    report_path: str | None,
+    minimum_cases: int,
+    minimum_capture_cases: int,
+    target_time_improvement: float,
+    max_capture_regression: float,
+    fail_if_not_supported: bool,
+    compact: bool,
+) -> int:
+    if minimum_cases <= 0 or minimum_capture_cases <= 0:
+        emit({"error": "minimum_case_counts_must_be_positive"}, compact)
+        return 2
+    if not 0.0 <= target_time_improvement <= 1.0:
+        emit({"error": "invalid_time_improvement", "value": target_time_improvement}, compact)
+        return 2
+    if not 0.0 <= max_capture_regression <= 1.0:
+        emit({"error": "invalid_capture_regression", "value": max_capture_regression}, compact)
+        return 2
+    cases, errors, cases_relative = load_usability_cases(root, requested_cases)
+    if errors:
+        emit({"error": "invalid_usability_cases", "cases": cases_relative, "details": errors}, compact)
+        return 2
+    paired = [case for case in cases if case.candidate is not None]
+    baseline, candidate, gate = usability_gate(
+        paired,
+        minimum_cases,
+        minimum_capture_cases,
+        target_time_improvement,
+        max_capture_regression,
+    )
+    categories: dict[str, Any] = {}
+    for category in sorted({case.category for case in paired}, key=str.casefold):
+        members = [case for case in paired if case.category == category]
+        categories[category] = {
+            "baseline": usability_stage_metrics([case.baseline for case in members]),
+            "candidate": usability_stage_metrics([
+                case.candidate for case in members if case.candidate is not None
+            ]),
+        }
+    payload: dict[str, Any] = {
+        "schema_version": USABILITY_EVAL_SCHEMA_VERSION,
+        "generated_on": date.today().isoformat(),
+        "cases": cases_relative,
+        "recorded_cases": len(cases),
+        "paired_cases": len(paired),
+        "recorded_baseline": usability_stage_metrics([case.baseline for case in cases]),
+        "paired": {
+            "baseline": baseline,
+            "candidate": candidate,
+        },
+        "categories": categories,
+        "gate": gate,
+        "results": [
+            {
+                "id": case.case_id,
+                "category": case.category,
+                "has_candidate": case.candidate is not None,
+            }
+            for case in cases
+        ],
+    }
+    if report_path:
+        report_resolved = resolve_vault_path(root, report_path)
+        if report_resolved is None:
+            emit({"error": "report_outside_vault", "requested": report_path}, compact)
+            return 2
+        destination, report_relative = report_resolved
+        if not report_relative.startswith(RETRIEVAL_EVAL_PREFIX) or destination.suffix.casefold() != ".json":
+            emit({
+                "error": "report_path_not_allowed",
+                "requested": report_path,
+                "allowed": f"{RETRIEVAL_EVAL_PREFIX}*.json",
+            }, compact)
+            return 2
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload["report"] = report_relative
+        destination.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+    emit(payload, compact)
+    return 1 if fail_if_not_supported and not gate["rollout_supported"] else 0
 
 
 # ---------------------------------------------------------------------------
@@ -2008,6 +2549,215 @@ def command_stale(root: Path, days: int, compact: bool) -> int:
             )
     results.sort(key=lambda item: (item["days"] is None, -(item["days"] or 0), item["path"]))
     emit({"days": days, "count": len(results), "notes": results}, compact)
+    return 0
+
+
+# ---------------------------------------------------------------------------
+# human-readable prose report
+# ---------------------------------------------------------------------------
+
+
+def heading_records(body: str) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    for match in HEADING_RE.finditer(body):
+        records.append({
+            "level": len(match.group(1)),
+            "name": match.group(2).strip().rstrip("#").strip(),
+            "line": body.count("\n", 0, match.start()) + 1,
+            "offset": match.start(),
+        })
+    return records
+
+
+def prose_paragraph_word_counts(body: str) -> list[int]:
+    """Return prose paragraph lengths while skipping Markdown structure and code."""
+    cleaned = strip_code(body)
+    counts: list[int] = []
+    for paragraph in re.split(r"\n\s*\n", cleaned):
+        lines = [line.strip() for line in paragraph.splitlines() if line.strip()]
+        if not lines:
+            continue
+        if any(
+            line.startswith(("#", ">", "- ", "* ", "+ ", "|", "<!--"))
+            or re.match(r"^\d+[.)]\s", line)
+            for line in lines
+        ):
+            continue
+        count = len(tokenize(" ".join(lines)))
+        if count:
+            counts.append(count)
+    return counts
+
+
+def readability_findings(
+    note: Note,
+    min_words: int,
+    max_lead_words: int,
+    max_paragraph_words: int,
+) -> dict[str, list[dict[str, Any]]]:
+    findings: dict[str, list[dict[str, Any]]] = {
+        "missing_lead_summary": [],
+        "buried_summary": [],
+        "heading_jumps": [],
+        "duplicate_headings": [],
+        "long_paragraphs": [],
+    }
+    readable_body = strip_code(note.body)
+    headings = heading_records(readable_body)
+    lead_offsets = [
+        item["offset"] for item in headings
+        if item["level"] >= 2 and item["name"].casefold() in LEAD_LABELS
+    ]
+    abstract_match = re.search(
+        r"^>\s*\[!abstract\]", readable_body, flags=re.MULTILINE | re.IGNORECASE
+    )
+    if abstract_match:
+        lead_offsets.append(abstract_match.start())
+    if note.word_count >= min_words and not lead_offsets:
+        findings["missing_lead_summary"].append({
+            "path": note.path,
+            "words": note.word_count,
+        })
+    elif lead_offsets:
+        lead_words = len(tokenize(readable_body[:min(lead_offsets)]))
+        if lead_words > max_lead_words:
+            findings["buried_summary"].append({
+                "path": note.path,
+                "words_before_summary": lead_words,
+                "limit": max_lead_words,
+            })
+
+    previous: dict[str, Any] | None = None
+    seen: dict[str, list[int]] = defaultdict(list)
+    for item in headings:
+        if previous and item["level"] > previous["level"] + 1:
+            findings["heading_jumps"].append({
+                "path": note.path,
+                "line": item["line"],
+                "from_level": previous["level"],
+                "to_level": item["level"],
+            })
+        previous = item
+        if item["level"] >= 2:
+            seen[item["name"].casefold()].append(item["line"])
+    for name, lines in sorted(seen.items()):
+        if len(lines) > 1:
+            findings["duplicate_headings"].append({
+                "path": note.path,
+                "heading": name,
+                "lines": lines,
+            })
+
+    paragraph_counts = prose_paragraph_word_counts(note.body)
+    for index, count in enumerate(paragraph_counts, start=1):
+        if count > max_paragraph_words:
+            findings["long_paragraphs"].append({
+                "path": note.path,
+                "paragraph": index,
+                "words": count,
+                "limit": max_paragraph_words,
+            })
+    return findings
+
+
+def command_readability(
+    root: Path,
+    path_prefix: str | None,
+    min_words: int,
+    max_lead_words: int,
+    max_paragraph_words: int,
+    strict: bool,
+    compact: bool,
+) -> int:
+    if any(value <= 0 for value in (min_words, max_lead_words, max_paragraph_words)):
+        emit({"error": "readability_limits_must_be_positive"}, compact)
+        return 2
+    prefix = path_prefix.replace("\\", "/") if path_prefix else None
+    cache = open_cache(root)
+    notes = cache.notes()
+    cache.close()
+    candidates = [
+        note for note in notes
+        if str(note.metadata.get("type", "")).strip() in READABILITY_TYPES
+        and not note.path.startswith(RETRIEVAL_EXCLUDED)
+        and (prefix is None or note.path.startswith(prefix))
+    ]
+    hydrate_bodies(root, candidates)
+    combined: dict[str, list[dict[str, Any]]] = {
+        "missing_lead_summary": [],
+        "buried_summary": [],
+        "heading_jumps": [],
+        "duplicate_headings": [],
+        "long_paragraphs": [],
+    }
+    for note in candidates:
+        note_findings = readability_findings(
+            note, min_words, max_lead_words, max_paragraph_words
+        )
+        for key, values in note_findings.items():
+            combined[key].extend(values)
+    warning_count = sum(len(values) for values in combined.values())
+    word_counts = sorted(note.word_count for note in candidates)
+    emit({
+        "summary": {
+            "notes": len(candidates),
+            "warnings": warning_count,
+            "median_words": median(word_counts) if word_counts else 0,
+            "min_words_for_summary": min_words,
+            "max_words_before_summary": max_lead_words,
+            "max_paragraph_words": max_paragraph_words,
+            "strict": strict,
+        },
+        "warnings": combined,
+    }, compact)
+    return 1 if strict and warning_count else 0
+
+
+# ---------------------------------------------------------------------------
+# Obsidian read-only URI integration
+# ---------------------------------------------------------------------------
+
+
+def command_obsidian_uri(
+    root: Path,
+    requested_file: str | None,
+    heading: str | None,
+    search: str | None,
+    compact: bool,
+) -> int:
+    if requested_file:
+        resolved = resolve_vault_path(root, requested_file)
+        if resolved is None:
+            emit({"error": "path_outside_vault", "requested": requested_file}, compact)
+            return 2
+        path, relative = resolved
+        if not path.is_file() or path.suffix.casefold() != ".md":
+            emit({"error": "note_not_found", "path": relative}, compact)
+            return 2
+        target = relative
+        detail: dict[str, Any] = {"file": relative}
+        if heading is not None:
+            clean_heading = heading.strip().lstrip("#").strip()
+            if not clean_heading:
+                emit({"error": "heading_required"}, compact)
+                return 2
+            target += "#" + clean_heading
+            detail["heading"] = clean_heading
+        action = "open"
+        params = (("vault", root.name), ("file", target))
+    elif search is not None:
+        clean_search = search.strip()
+        if not clean_search:
+            emit({"error": "search_required"}, compact)
+            return 2
+        action = "search"
+        params = (("vault", root.name), ("query", clean_search))
+        detail = {"query": clean_search}
+    else:
+        emit({"error": "file_or_search_required"}, compact)
+        return 2
+    uri = f"obsidian://{action}?" + urlencode(params, quote_via=quote, safe="")
+    emit({"action": action, "uri": uri, **detail, "launched": False}, compact)
     return 0
 
 
@@ -2798,6 +3548,30 @@ def build_parser() -> argparse.ArgumentParser:
     eval_parser.add_argument("--fail-below-recall", type=float, default=None,
                              help="Exit 1 when recall at the largest k is below this 0..1 value")
 
+    usability_parser = sub("eval-usability", "Evaluate paired human before/after task observations")
+    usability_parser.add_argument(
+        "--cases", default=USABILITY_CASES_RELATIVE,
+        help=f"Private JSONL cases inside the vault (default: {USABILITY_CASES_RELATIVE})",
+    )
+    usability_parser.add_argument(
+        "--report", default=None,
+        help=f"Write a JSON report inside the vault (suggested: {USABILITY_REPORT_RELATIVE})",
+    )
+    usability_parser.add_argument("--minimum-cases", type=int, default=USABILITY_MIN_PAIRED_CASES)
+    usability_parser.add_argument(
+        "--minimum-capture-cases", type=int, default=USABILITY_MIN_CAPTURE_CASES
+    )
+    usability_parser.add_argument(
+        "--target-time-improvement", type=float, default=USABILITY_TARGET_TIME_IMPROVEMENT
+    )
+    usability_parser.add_argument(
+        "--max-capture-regression", type=float, default=USABILITY_MAX_CAPTURE_REGRESSION
+    )
+    usability_parser.add_argument(
+        "--fail-if-not-supported", action="store_true",
+        help="Exit 1 unless the predeclared usability gate passes",
+    )
+
     pack_parser = sub("pack", "Token-budgeted Markdown context bundle")
     pack_parser.add_argument("terms")
     pack_parser.add_argument("--budget-tokens", type=int, default=4000)
@@ -2819,6 +3593,29 @@ def build_parser() -> argparse.ArgumentParser:
 
     stale_parser = sub("stale", "Notes whose `updated` has aged out")
     stale_parser.add_argument("--days", type=int, default=DEFAULT_STALE_DAYS)
+
+    readability_parser = sub("readability", "Warning-only human-readable prose report")
+    readability_parser.add_argument("--path-prefix", default=None)
+    readability_parser.add_argument("--min-words", type=int, default=DEFAULT_READABILITY_MIN_WORDS)
+    readability_parser.add_argument(
+        "--max-lead-words", type=int, default=DEFAULT_READABILITY_MAX_LEAD_WORDS
+    )
+    readability_parser.add_argument(
+        "--max-paragraph-words", type=int, default=DEFAULT_READABILITY_MAX_PARAGRAPH_WORDS
+    )
+    readability_parser.add_argument(
+        "--strict", action="store_true", help="Exit 1 when any readability warning exists"
+    )
+
+    uri_parser = sub("obsidian-uri", "Print a non-mutating Obsidian open or search URI")
+    uri_group = uri_parser.add_mutually_exclusive_group(required=True)
+    uri_group.add_argument(
+        "--file", dest="requested_file", help="Existing Markdown note inside the vault"
+    )
+    uri_group.add_argument("--search", help="Search query to open in Obsidian")
+    uri_parser.add_argument(
+        "--heading", default=None, help="Heading within --file (not valid with --search)"
+    )
 
     touch_parser = sub("touch", "Stamp `updated` in a note's frontmatter")
     touch_parser.add_argument("path")
@@ -2887,6 +3684,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "eval-retrieval":
         return command_eval_retrieval(root, args.cases, args.k_values, args.fuzzy,
                                       args.report, args.fail_below_recall, compact)
+    if args.command == "eval-usability":
+        return command_eval_usability(
+            root, args.cases, args.report, args.minimum_cases,
+            args.minimum_capture_cases, args.target_time_improvement,
+            args.max_capture_regression, args.fail_if_not_supported, compact,
+        )
     if args.command == "pack":
         options = QueryOptions(
             limit=max(1, args.limit),
@@ -2903,6 +3706,18 @@ def main(argv: list[str] | None = None) -> int:
         return command_tags(root, args.min_count, compact)
     if args.command == "stale":
         return command_stale(root, args.days, compact)
+    if args.command == "readability":
+        return command_readability(
+            root, args.path_prefix, args.min_words, args.max_lead_words,
+            args.max_paragraph_words, args.strict, compact,
+        )
+    if args.command == "obsidian-uri":
+        if args.search is not None and args.heading is not None:
+            emit({"error": "heading_requires_file"}, compact)
+            return 2
+        return command_obsidian_uri(
+            root, args.requested_file, args.heading, args.search, compact
+        )
     if args.command == "touch":
         return command_touch(root, args.path, args.stamp, args.only_durable, compact)
     if args.command == "source-seal":

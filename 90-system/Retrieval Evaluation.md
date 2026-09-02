@@ -20,7 +20,7 @@ Copy `90-system/evals/retrieval-cases.example.jsonl` to the ignored default path
 `90-system/evals/retrieval-cases.jsonl`. Keep one JSON object per line:
 
 ```json
-{"id":"find-link-policy","query":"how are relationships checked","expected":"90-system/Link Policy.md","category":"known-item"}
+{"id":"find-link-policy","query":"how are relationships checked","expected":"90-system/Link Policy.md","evidence":[{"path":"90-system/Link Policy.md","heading":"Typed relations"}],"forbidden":["90-system/Design Rationale.md"],"category":"known-item"}
 ```
 
 - `query` and `expected` are required. `expected` may be one path or a list of relevant
@@ -28,6 +28,13 @@ Copy `90-system/evals/retrieval-cases.example.jsonl` to the ignored default path
 - `id` and `category` are recommended. IDs, rather than queries, appear in result details.
 - Optional `type` and `tags` fields accept either one string or a string list and exercise
   the same filters as normal retrieval.
+- Optional `evidence` entries name an expected path and an exact heading inside it. The
+  loader rejects missing headings and evidence paths not already declared as expected.
+  Evidence recall therefore tests whether the note containing the pre-judged evidence was
+  retrieved; it does not claim that a model interpreted the evidence correctly.
+- Optional `forbidden` is one path or a path list for plausible but harmful false-positive
+  notes. Reports show their hit rate at each cutoff. A forbidden path cannot also be
+  expected.
 - Use questions and vocabulary that actually occur during work. Include known-item,
   topical, paraphrase, acronym, multilingual, and filtered queries where those patterns
   matter. Do not manufacture easy cases from note titles alone.
@@ -45,12 +52,14 @@ python3 90-system/automation/vault.py eval-retrieval --k 1,3,5,10 --report 90-sy
 python3 90-system/automation/vault.py eval-retrieval --fail-below-recall 0.85
 ```
 
-The report contains macro recall at each requested cutoff, mean reciprocal rank (MRR),
-per-category metrics, expected paths, ranks, and returned paths. It deliberately omits the
-query text. `--fail-below-recall` applies to the largest requested cutoff and returns exit
-code 1 when the target is missed; malformed cases return 2. Add `--fuzzy` only when typo
-tolerance is part of the behavior being evaluated. Request `k=5` to obtain a meaningful
-`semantic_gate`; without it, the gate reports insufficient evidence.
+The schema-version 2 report contains macro recall, evidence recall, forbidden-hit rate,
+mean retrieved context bytes at each cutoff, mean reciprocal rank (MRR), per-category
+metrics, expected paths, ranks, and returned paths. It deliberately omits the query text.
+Context bytes are a model-independent size signal, not a token estimate.
+`--fail-below-recall` applies to the largest requested cutoff and returns exit code 1 when
+the target is missed; malformed cases return 2. Add `--fuzzy` only when typo tolerance is
+part of the behavior being evaluated. Request `k=5` to obtain a meaningful `semantic_gate`;
+without it, the gate reports insufficient evidence.
 
 ## Semantic-retrieval gate
 

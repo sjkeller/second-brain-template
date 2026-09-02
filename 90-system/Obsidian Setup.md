@@ -43,6 +43,11 @@ and other nonessential core plugins remain disabled in the template; enable them
 when you deliberately need them. The [[90-system/bases/MOC - Bases|Bases]] dashboards use
 the supported core Bases plugin and need no community dependency.
 
+The safe capture and URI bridge is documented in
+[[90-system/Obsidian Integration|Obsidian Integration]]. It includes an importable official
+Web Clipper template but does not install a browser extension, launch Obsidian, or enable a
+remote model interpreter.
+
 ## Graph view
 
 The global graph starts with arrows enabled, only existing files, orphans visible, and

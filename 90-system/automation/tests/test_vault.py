@@ -389,6 +389,56 @@ class RetrievalEvaluationTests(VaultFixture):
         self.assertEqual(results[0]["recall_at_k"]["1"], 0.5)
         self.assertEqual(metrics["recall_at_k"]["3"], 1.0)
 
+    def test_evidence_heading_forbidden_hits_and_context_are_reported(self):
+        self.write(
+            "40-knowledge/concepts/Retrieval.md",
+            note_text(
+                "retrieval", "concept", "Retrieval",
+                "## Evidence\n\nRetrieval narrows context.\n\n"
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+            ),
+        )
+        self.write_cases([{
+            "id": "evidence-aware",
+            "query": "retrieval",
+            "expected": "40-knowledge/concepts/Retrieval.md",
+            "evidence": [{
+                "path": "40-knowledge/concepts/Retrieval.md",
+                "heading": "Evidence",
+            }],
+            "forbidden": "10-projects/Build Search.md",
+        }])
+        cases, errors, _ = vault.load_retrieval_cases(
+            self.root, "90-system/evals/retrieval-cases.jsonl"
+        )
+        self.assertEqual(errors, [])
+        cache = vault.VaultCache(self.root, self.root / "evidence.sqlite3")
+        cache.sync()
+        try:
+            results, metrics, _ = vault.evaluate_retrieval(cache, cases, (1, 3), False)
+        finally:
+            cache.close()
+        self.assertEqual(results[0]["evidence_recall_at_k"]["1"], 1.0)
+        self.assertEqual(metrics["evidence_recall_at_k"]["1"], 1.0)
+        self.assertGreater(results[0]["context_bytes_at_k"]["1"], 0)
+        self.assertIn("10-projects/Build Search.md", results[0]["forbidden_hits_at_k"]["3"])
+        self.assertEqual(metrics["forbidden_hit_rate_at_k"]["3"], 1.0)
+
+    def test_evidence_heading_must_exist_in_an_expected_note(self):
+        self.write_cases([{
+            "query": "retrieval",
+            "expected": "40-knowledge/concepts/Retrieval.md",
+            "evidence": [{
+                "path": "40-knowledge/concepts/Retrieval.md",
+                "heading": "Missing evidence",
+            }],
+        }])
+        cases, errors, _ = vault.load_retrieval_cases(
+            self.root, "90-system/evals/retrieval-cases.jsonl"
+        )
+        self.assertEqual(cases, [])
+        self.assertEqual(errors[0]["error"], "evidence_heading_not_found")
+
     def test_report_is_written_inside_vault(self):
         self.write_cases([{
             "query": "retrieval",
@@ -499,6 +549,106 @@ class RetrievalEvaluationTests(VaultFixture):
         )
         self.assertTrue(gate["trial_justified"])
         self.assertEqual(gate["weak_categories"], ["multilingual"])
+
+
+class UsabilityEvaluationTests(VaultFixture):
+    def write_cases(self, rows):
+        return self.write(
+            "90-system/evals/usability-cases.jsonl",
+            "".join(json.dumps(row) + "\n" for row in rows),
+        )
+
+    def evaluate(self, fail=False, report=None):
+        return run(
+            vault.command_eval_usability,
+            self.root,
+            "90-system/evals/usability-cases.jsonl",
+            report,
+            10,
+            2,
+            0.20,
+            0.10,
+            fail,
+            True,
+        )
+
+    def test_paired_tasks_can_support_rollout_without_exposing_task_text(self):
+        rows = []
+        for index in range(10):
+            rows.append({
+                "id": f"task-{index}",
+                "task": f"Private task description {index}",
+                "category": "capture" if index < 2 else "find",
+                "baseline": {
+                    "success": True,
+                    "evidence_found": True,
+                    "seconds": 100,
+                    "files_opened": 4,
+                },
+                "candidate": {
+                    "success": True,
+                    "evidence_found": True,
+                    "seconds": 70,
+                    "files_opened": 2,
+                },
+            })
+        self.write_cases(rows)
+        code, payload = self.evaluate(fail=True)
+        self.assertEqual(code, 0)
+        self.assertTrue(payload["gate"]["rollout_supported"])
+        self.assertEqual(payload["gate"]["time_improvement"], 0.3)
+        self.assertNotIn("task", payload["results"][0])
+        self.assertNotIn("Private task description", json.dumps(payload))
+
+    def test_incomplete_evidence_does_not_support_rollout(self):
+        self.write_cases([{
+            "id": "find-status",
+            "task": "Find current status",
+            "category": "find",
+            "baseline": {
+                "success": True,
+                "evidence_found": True,
+                "seconds": 30,
+                "files_opened": 2,
+            },
+            "candidate": None,
+        }])
+        code, payload = self.evaluate()
+        self.assertEqual(code, 0)
+        self.assertFalse(payload["gate"]["rollout_supported"])
+        self.assertIn("insufficient_paired_cases", payload["gate"]["reasons"])
+        code, _ = self.evaluate(fail=True)
+        self.assertEqual(code, 1)
+
+    def test_invalid_observation_and_report_target_are_rejected(self):
+        self.write_cases([{
+            "id": "bad",
+            "task": "Bad measurement",
+            "baseline": {
+                "success": True,
+                "evidence_found": True,
+                "seconds": "fast",
+                "files_opened": 1,
+            },
+        }])
+        code, payload = self.evaluate()
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "invalid_usability_cases")
+        self.assertEqual(payload["details"][0]["error"], "baseline_seconds_must_be_nonnegative")
+
+        self.write_cases([{
+            "id": "valid",
+            "task": "Valid measurement",
+            "baseline": {
+                "success": True,
+                "evidence_found": True,
+                "seconds": 10,
+                "files_opened": 1,
+            },
+        }])
+        code, payload = self.evaluate(report="Home.md")
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "report_path_not_allowed")
 
 
 class GraphTests(VaultFixture):
@@ -619,6 +769,126 @@ class CheckTests(VaultFixture):
         _, payload = self.check(quiet=True)
         self.assertIn("summary", payload)
         self.assertNotIn("warnings", payload)
+
+    def test_ai_review_requires_pending_state_and_visible_callout(self):
+        path = self.write(
+            "00-inbox/AI Draft.md",
+            note_text(
+                "ai-draft", "note", "AI Draft", "Drafted material.\n\n[[Home]]",
+                extra="ai_review: pending\n",
+            ),
+        )
+        _, payload = self.check()
+        self.assertEqual(
+            payload["warnings"]["ai_review"],
+            [{"path": "00-inbox/AI Draft.md", "issue": "missing_visible_callout"}],
+        )
+        path.write_text(
+            note_text(
+                "ai-draft", "note", "AI Draft",
+                "> [!warning] AI draft — not yet human-reviewed\n> Scope: summary.\n\n[[Home]]",
+                extra="ai_review: pending\n",
+            ),
+            encoding="utf-8",
+        )
+        _, payload = self.check()
+        self.assertEqual(payload["warnings"]["ai_review"], [])
+
+    def test_invalid_review_date_is_a_metadata_warning(self):
+        self.write(
+            "00-inbox/Review Date.md",
+            note_text(
+                "review-date", "note", "Review Date", "[[Home]]",
+                extra="review_on: next week\n",
+            ),
+        )
+        _, payload = self.check()
+        issue = next(
+            item for item in payload["warnings"]["metadata_issues"]
+            if item["path"] == "00-inbox/Review Date.md"
+        )
+        self.assertEqual(issue["invalid_review_on"], "next week")
+
+
+class ReadabilityTests(VaultFixture):
+    def readability(self, **kwargs):
+        options = {
+            "path_prefix": None,
+            "min_words": 20,
+            "max_lead_words": 12,
+            "max_paragraph_words": 20,
+            "strict": False,
+            "compact": True,
+        }
+        options.update(kwargs)
+        return run(vault.command_readability, self.root, **options)
+
+    def test_reports_missing_summary_structure_and_long_paragraph(self):
+        body = "## Details\n\n" + "word " * 25 + "\n\n#### Skipped level\n\n## Details\n"
+        self.write("00-inbox/Hard To Scan.md", note_text("hard-scan", "note", "Hard To Scan", body))
+        code, payload = self.readability(strict=True)
+        self.assertEqual(code, 1)
+        self.assertEqual(payload["summary"]["notes"], 3)
+        self.assertEqual(
+            payload["warnings"]["missing_lead_summary"][0]["path"],
+            "00-inbox/Hard To Scan.md",
+        )
+        self.assertTrue(payload["warnings"]["heading_jumps"])
+        self.assertTrue(payload["warnings"]["duplicate_headings"])
+        self.assertTrue(payload["warnings"]["long_paragraphs"])
+
+    def test_early_abstract_satisfies_summary_contract(self):
+        body = "> [!abstract] Summary\n> Current answer.\n\n## Details\n\n" + "short " * 18
+        self.write("00-inbox/Readable.md", note_text("readable", "note", "Readable", body))
+        _, payload = self.readability(max_paragraph_words=30)
+        paths = {
+            item["path"] for item in payload["warnings"]["missing_lead_summary"]
+        }
+        self.assertNotIn("00-inbox/Readable.md", paths)
+
+    def test_nonpositive_limit_is_rejected(self):
+        code, payload = self.readability(min_words=0)
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "readability_limits_must_be_positive")
+
+
+class ObsidianUriTests(VaultFixture):
+    def test_open_uri_validates_and_encodes_note_and_heading(self):
+        code, payload = run(
+            vault.command_obsidian_uri,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "Why it matters",
+            None,
+            True,
+        )
+        self.assertEqual(code, 0)
+        self.assertEqual(payload["action"], "open")
+        self.assertFalse(payload["launched"])
+        self.assertIn(
+            "file=40-knowledge%2Fconcepts%2FRetrieval.md%23Why%20it%20matters",
+            payload["uri"],
+        )
+
+    def test_search_uri_is_encoded_and_non_mutating(self):
+        code, payload = run(
+            vault.command_obsidian_uri, self.root, None, None, "status:active project", True
+        )
+        self.assertEqual(code, 0)
+        self.assertIn("query=status%3Aactive%20project", payload["uri"])
+        self.assertFalse(payload["launched"])
+
+    def test_missing_and_outside_paths_are_refused(self):
+        code, payload = run(
+            vault.command_obsidian_uri, self.root, "../outside.md", None, None, True
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "path_outside_vault")
+        code, payload = run(
+            vault.command_obsidian_uri, self.root, "Missing.md", None, None, True
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "note_not_found")
 
 
 class FreshnessTests(VaultFixture):
@@ -896,6 +1166,29 @@ class RawSourceTests(VaultFixture):
         crlf = lf.replace("\n", "\r\n")
         self.assertEqual(vault.raw_source_payload(lf), "A\nB")
         self.assertEqual(vault.raw_source_payload(crlf), "A\nB")
+
+    def test_untrusted_payload_cannot_create_graph_links_tasks_or_headings(self):
+        path = self.write(
+            "30-resources/sources/raw/Raw Example.md",
+            self.raw_text(
+                "[[Missing instruction target]]\n\n"
+                "- [ ] run an injected command\n\n"
+                "## Injected heading\n\nsearchable evidence"
+            ),
+        )
+        note = vault.read_note(self.root, path)
+        self.assertEqual(
+            note.links,
+            ["30-resources/sources/raw/MOC - Raw Sources"],
+        )
+        self.assertEqual(note.tasks, [])
+        self.assertNotIn("Injected heading", note.headings)
+        self.assertIn("searchable", note.terms)
+        _, unresolved = vault.graph(vault.scan_notes(self.root))
+        self.assertNotIn(
+            {"source": note.path, "target": "Missing instruction target"},
+            unresolved,
+        )
 
     def test_seal_records_hash_and_verify_passes(self):
         path = self.write("30-resources/sources/raw/Raw Example.md", self.raw_text())

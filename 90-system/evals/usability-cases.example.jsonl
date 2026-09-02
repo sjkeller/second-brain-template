@@ -1,0 +1,2 @@
+{"id":"find-current-project-status","task":"Replace this fictional task with a real project-status lookup","category":"find","baseline":{"success":false,"evidence_found":false,"seconds":0,"files_opened":0},"candidate":null}
+{"id":"capture-source-with-provenance","task":"Replace this fictional task with a real source-capture workflow","category":"capture","baseline":{"success":false,"evidence_found":false,"seconds":0,"files_opened":0},"candidate":null}
