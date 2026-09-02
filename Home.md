@@ -52,6 +52,7 @@ links.
 - [[90-system/MCP Integration|MCP Integration]] — local access from Claude Code and Codex.
 - [[90-system/automation/MOC - Automation|Automation]] — the deterministic commands.
 - [[90-system/bases/MOC - Bases|Bases]] — property dashboards for humans.
+- [[README|Repository guide]] — setup, daily use, and MCP registration.
 - [[90-system/MOC - System|System map]]
 
 Start a new note from [[90-system/templates/MOC - Templates|Templates]]. Put files and media under [[99-attachments/MOC - Attachments|Attachments]].

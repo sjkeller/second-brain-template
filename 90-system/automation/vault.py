@@ -63,7 +63,7 @@ RELATION_FIELDS = tuple(RELATION_INVERSES)
 
 EXCLUDED_DIRS = {".agents", ".claude", ".git", ".obsidian", "__pycache__", ".trash"}
 REQUIRED_KEYS = ("id", "type", "status", "created", "updated")
-ROOT_EXEMPT = {"AGENTS.md", "CLAUDE.md"}
+ROOT_EXEMPT = {"AGENTS.md", "CLAUDE.md", "README.md"}
 EXEMPT_PREFIXES = ("90-system/templates/", "90-system/skills/", "90-system/indexes/")
 RETRIEVAL_EXCLUDED = ("90-system/templates/", "90-system/skills/_template/", "90-system/indexes/")
 

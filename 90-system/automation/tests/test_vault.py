@@ -195,6 +195,7 @@ class MutationTests(unittest.TestCase):
         self.assertFalse(vault.is_auto_stamp_target("90-system/Link Policy.md"))
         self.assertFalse(vault.is_auto_stamp_target("99-attachments/x.md"))
         self.assertFalse(vault.is_auto_stamp_target("CLAUDE.md"))
+        self.assertFalse(vault.is_auto_stamp_target("README.md"))
         self.assertFalse(vault.is_auto_stamp_target("40-knowledge/image.png"))
 
 
