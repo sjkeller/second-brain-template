@@ -57,8 +57,11 @@ Ranking is BM25F over an inverted index, with parsing cached incrementally again
 mtime and size. This keeps retrieval inspectable — you can read why a note ranked where it
 did — and keeps it local, so no private note is sent anywhere to be embedded. It also stays
 fast as the vault grows, because queries touch posting lists rather than every file.
-Semantic search can be layered on later; lexical retrieval remains the fallback that always
-works and always explains itself.
+Semantic search can be layered on later only when the human-judged evidence gate in
+[[90-system/Retrieval Evaluation|Retrieval Evaluation]] identifies a material lexical gap.
+The template's fictional examples do not meet that gate, so no semantic engine or embedding
+dependency is installed. Lexical retrieval remains the fallback that always works and
+always explains itself.
 
 ## Research basis
 

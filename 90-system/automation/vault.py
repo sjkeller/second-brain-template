@@ -71,6 +71,10 @@ CACHE_RELATIVE = "90-system/indexes/.vault-cache.sqlite3"
 RETRIEVAL_CASES_RELATIVE = "90-system/evals/retrieval-cases.jsonl"
 RETRIEVAL_REPORT_RELATIVE = "90-system/evals/retrieval-report.json"
 RETRIEVAL_EVAL_SCHEMA_VERSION = 1
+SEMANTIC_TRIAL_MIN_CASES = 20
+SEMANTIC_TRIAL_OVERALL_RECALL_AT_5 = 0.85
+SEMANTIC_TRIAL_CATEGORY_MIN_CASES = 5
+SEMANTIC_TRIAL_CATEGORY_RECALL_AT_5 = 0.75
 
 KNOWN_TYPES = (
     "moc", "project", "area", "resource", "source", "raw-source", "concept", "person",
@@ -1653,6 +1657,57 @@ def retrieval_metrics(case_results: list[dict[str, Any]], k_values: tuple[int, .
     }
 
 
+def semantic_trial_gate(
+    metrics: dict[str, Any], categories: dict[str, Any], k_values: tuple[int, ...]
+) -> dict[str, Any]:
+    """Apply the documented evidence floor; this never enables semantic retrieval."""
+    measured = 5 in k_values
+    case_count = int(metrics.get("case_count", 0))
+    evidence_sufficient = measured and case_count >= SEMANTIC_TRIAL_MIN_CASES
+    overall_recall = metrics.get("recall_at_k", {}).get("5") if measured else None
+    weak_categories = sorted(
+        category
+        for category, values in categories.items()
+        if measured
+        and int(values.get("case_count", 0)) >= SEMANTIC_TRIAL_CATEGORY_MIN_CASES
+        and float(values.get("recall_at_k", {}).get("5", 1.0))
+        < SEMANTIC_TRIAL_CATEGORY_RECALL_AT_5
+    )
+    overall_gap = measured and overall_recall is not None and (
+        float(overall_recall) < SEMANTIC_TRIAL_OVERALL_RECALL_AT_5
+    )
+    gap_detected = bool(overall_gap or weak_categories)
+    trial_justified = evidence_sufficient and gap_detected
+    reasons: list[str] = []
+    if not measured:
+        reasons.append("recall_at_5_not_measured")
+    if case_count < SEMANTIC_TRIAL_MIN_CASES:
+        reasons.append("insufficient_representative_cases")
+    if evidence_sufficient and not gap_detected:
+        reasons.append("lexical_recall_gate_not_breached")
+    if trial_justified:
+        reasons.append("lexical_gap_justifies_local_hybrid_trial")
+    return {
+        "trial_justified": trial_justified,
+        "semantic_retrieval_enabled": False,
+        "evidence_sufficient": evidence_sufficient,
+        "lexical_gap_detected": gap_detected,
+        "weak_categories": weak_categories,
+        "criteria": {
+            "minimum_cases": SEMANTIC_TRIAL_MIN_CASES,
+            "overall_recall_at_5_below": SEMANTIC_TRIAL_OVERALL_RECALL_AT_5,
+            "category_minimum_cases": SEMANTIC_TRIAL_CATEGORY_MIN_CASES,
+            "category_recall_at_5_below": SEMANTIC_TRIAL_CATEGORY_RECALL_AT_5,
+        },
+        "reasons": reasons,
+        "next": (
+            "Implement and compare a local-only hybrid trial; do not enable it by default."
+            if trial_justified
+            else "Keep lexical retrieval as the only retrieval engine."
+        ),
+    }
+
+
 def evaluate_retrieval(
     cache: VaultCache,
     cases: list[RetrievalCase],
@@ -1728,16 +1783,6 @@ def command_eval_retrieval(
         "results": case_results,
     }
 
-    if report_path:
-        report_resolved = resolve_vault_path(root, report_path)
-        if report_resolved is None:
-            emit({"error": "report_outside_vault", "requested": report_path}, compact)
-            return 2
-        destination, report_relative = report_resolved
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        payload["report"] = report_relative
-
     evaluated_k = max(k_values)
     passed = fail_below_recall is None or metrics["recall_at_k"][str(evaluated_k)] >= fail_below_recall
     payload["threshold"] = {
@@ -1745,6 +1790,17 @@ def command_eval_retrieval(
         "minimum_recall": fail_below_recall,
         "passed": passed,
     }
+    payload["semantic_gate"] = semantic_trial_gate(metrics, categories, k_values)
+
+    if report_path:
+        report_resolved = resolve_vault_path(root, report_path)
+        if report_resolved is None:
+            emit({"error": "report_outside_vault", "requested": report_path}, compact)
+            return 2
+        destination, report_relative = report_resolved
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        payload["report"] = report_relative
+        destination.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     emit(payload, compact)
     return 0 if passed else 1
 

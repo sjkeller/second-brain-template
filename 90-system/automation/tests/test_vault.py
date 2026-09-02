@@ -365,6 +365,8 @@ class RetrievalEvaluationTests(VaultFixture):
         self.assertEqual(payload["metrics"]["mrr"], 1.0)
         self.assertEqual(payload["categories"]["known-item"]["case_count"], 1)
         self.assertNotIn("query", payload["results"][0])
+        self.assertFalse(payload["semantic_gate"]["trial_justified"])
+        self.assertIn("insufficient_representative_cases", payload["semantic_gate"]["reasons"])
 
     def test_multiple_expected_notes_use_macro_recall(self):
         self.write_cases([{
@@ -408,6 +410,8 @@ class RetrievalEvaluationTests(VaultFixture):
             (self.root / "90-system/evals/retrieval-report.json").read_text(encoding="utf-8")
         )
         self.assertEqual(report["metrics"]["mrr"], 1.0)
+        self.assertIn("semantic_gate", report)
+        self.assertTrue(report["threshold"]["passed"])
 
     def test_bad_cases_fail_without_running(self):
         self.write_cases([
@@ -450,6 +454,30 @@ class RetrievalEvaluationTests(VaultFixture):
         self.assertEqual(vault.k_list("5,1,5"), (1, 5))
         with self.assertRaises(Exception):
             vault.k_list("0,3")
+
+    def test_semantic_trial_gate_needs_enough_cases_and_a_measured_gap(self):
+        justified = vault.semantic_trial_gate(
+            {"case_count": 20, "recall_at_k": {"5": 0.84}, "mrr": 0.7},
+            {"known-item": {"case_count": 20, "recall_at_k": {"5": 0.84}, "mrr": 0.7}},
+            (1, 5),
+        )
+        self.assertTrue(justified["trial_justified"])
+        self.assertFalse(justified["semantic_retrieval_enabled"])
+
+        strong_lexical = vault.semantic_trial_gate(
+            {"case_count": 20, "recall_at_k": {"5": 0.9}, "mrr": 0.8}, {}, (5,)
+        )
+        self.assertFalse(strong_lexical["trial_justified"])
+        self.assertIn("lexical_recall_gate_not_breached", strong_lexical["reasons"])
+
+    def test_semantic_trial_gate_can_find_a_material_weak_category(self):
+        gate = vault.semantic_trial_gate(
+            {"case_count": 25, "recall_at_k": {"5": 0.92}, "mrr": 0.8},
+            {"multilingual": {"case_count": 5, "recall_at_k": {"5": 0.6}, "mrr": 0.4}},
+            (1, 3, 5),
+        )
+        self.assertTrue(gate["trial_justified"])
+        self.assertEqual(gate["weak_categories"], ["multilingual"])
 
 
 class GraphTests(VaultFixture):

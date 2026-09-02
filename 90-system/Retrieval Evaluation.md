@@ -47,7 +47,8 @@ The report contains macro recall at each requested cutoff, mean reciprocal rank 
 per-category metrics, expected paths, ranks, and returned paths. It deliberately omits the
 query text. `--fail-below-recall` applies to the largest requested cutoff and returns exit
 code 1 when the target is missed; malformed cases return 2. Add `--fuzzy` only when typo
-tolerance is part of the behavior being evaluated.
+tolerance is part of the behavior being evaluated. Request `k=5` to obtain a meaningful
+`semantic_gate`; without it, the gate reports insufficient evidence.
 
 ## Semantic-retrieval gate
 
@@ -63,5 +64,9 @@ Keep lexical retrieval as the default. Optional local embeddings are justified o
 The gate is evidence for trying a local semantic index, not permission to send vault text
 to a remote service. Record the before/after report paths and decision in a
 [[60-decisions/MOC - Decisions|decision note]].
+
+`eval-retrieval` applies these numeric criteria in its `semantic_gate` output. It never
+enables or installs a semantic engine. The tracked two-case example is schema documentation,
+not representative evidence, so it must always leave semantic retrieval disabled.
 
 Related: [[90-system/Retrieval Guide|Retrieval Guide]] · [[90-system/automation/MOC - Automation|Automation]] · [[90-system/Source Trust Policy|Source Trust Policy]]
