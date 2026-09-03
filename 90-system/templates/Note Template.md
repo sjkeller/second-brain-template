@@ -10,9 +10,8 @@ tags: []
 
 # {{title}}
 
-## Summary
-
-State the durable point in one or two sentences.
+> [!abstract] Summary
+> State the durable point in one or two sentences.
 
 ## Details
 

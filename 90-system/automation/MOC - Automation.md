@@ -3,7 +3,7 @@ id: moc-automation
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 tags:
   - system/moc
   - system/automation
@@ -29,14 +29,30 @@ Windows installation that exposes Python only through its launcher, use `py` ins
   reports the estimate.
 - `python3 90-system/automation/vault.py related "path.md" --depth 2` — resolved wikilink
   neighbours.
+- `... eval-retrieval` — run the production ranker against the ignored private JSONL case
+  set and report note/evidence recall, forbidden hits, context bytes, MRR, and the
+  non-enabling semantic-trial gate. See
+  [[90-system/Retrieval Evaluation|Retrieval Evaluation]].
+- `... obsidian-uri --file "path.md"` or `--search "terms"` — print a percent-encoded,
+  non-mutating Obsidian URI. It never launches the application or exposes write actions.
+
+The local `mcp_server.py` exposes the same retrieval primitives to user-scoped Claude Code
+and Codex sessions without adding a second index or sending text to a remote embedding
+service. It also provides two narrowly additive capture tools. Configuration, tool policy,
+and compatibility details are in [[90-system/MCP Integration|MCP Integration]].
 
 ## Author
 
 - `... new --type concept --title "Name" --tags "a,b"` — renders the template, generates
   the id, stamps the dates, and links the parent MOC under its `vault:links` anchor.
   `--dry-run` prints the note without writing it.
-- `... touch "path.md"` — stamp `updated`. `--only-durable` makes it a no-op for Journal,
-  System, and Attachments, which is how the edit hook uses it.
+- `... touch "path.md"` — stamp `updated`. `--only-durable` makes it a no-op for raw-source
+  payloads, Journal, System, and Attachments, which is how the edit hook uses it.
+- `... source-seal "30-resources/sources/raw/<note>.md"` — hash the delimited payload and
+  change a draft raw source to `status: immutable`. Add `--verify` for a read-only check.
+- `... merge <canonical> <retired> --merged-body <draft>` — dry-run a consolidation and
+  redirect plan. Writing additionally requires `--apply --plan <plan_sha256>`; see
+  [[90-system/Safe Merge Policy|Safe Merge Policy]].
 
 ## Report
 
@@ -44,17 +60,32 @@ Windows installation that exposes Python only through its launcher, use `py` ins
 - `... stale --days 180` — notes whose `updated` has aged out.
 - `... tags` — the tag inventory, with single-use tags called out.
 - `... index` — writes [[90-system/indexes/Vault Index|Vault Index]] and its JSON twin.
+- `... readability` — warning-only structural readability diagnostics for durable notes;
+  use `--path-prefix` to inspect a narrow scope.
+- `... eval-usability` — aggregate private paired before/after human task observations and
+  apply the predeclared rollout gate in
+  [[90-system/Human Usability Evaluation|Human Usability Evaluation]].
 
 ## Validate
 
 - `... check` — separates **errors** from **warnings** and exits nonzero only on errors.
   - Errors: unresolved note or attachment links, duplicate ids, duplicate titles, broken
-    or drifted skill pointers.
+    or drifted skill pointers, changed or structurally invalid sealed raw-source payloads,
+    malformed typed relations or supersession cycles, and invalid redirects.
   - Warnings: missing frontmatter keys, type/folder placement, notes with no MOC edge,
-    orphans, staleness, tag sprawl.
+    orphans, staleness, tag sprawl, raw sources that have not been sealed yet, declared
+    freshness problems, and typed relations whose inverse declaration is missing.
+  - `ai_review: pending` must have the visible AI-draft warning callout; other values are
+    rejected as warnings. A non-empty `review_on` must be an ISO date.
   - `--strict` fails on warnings too; `--quiet` prints the summary and errors only.
+
+Raw-source payload text remains indexed for explicit retrieval, but it cannot contribute
+wikilinks, headings, or checkbox tasks to structural reports. Only metadata and Markdown
+outside the untrusted payload boundary can do that.
 - `... cache` / `cache --rebuild` — inspect or discard the retrieval cache.
 - `python3 -m unittest discover -s 90-system/automation/tests` — the test suite.
+- `mcp_hook.py --vault-root <vault>` — shared non-blocking Claude/Codex MCP audit hook;
+  it reads one hook JSON object from stdin and never logs tool arguments or results.
 
 ## How retrieval stays fast
 
@@ -82,6 +113,7 @@ queries on the actual Windows and Linux vault before tuning these choices.
 
 These commands are local preprocessing. They do not call an AI service or transmit vault
 content. The disposable cache remains out of version control because it is generated local
-state, not because it contains full note bodies.
+state, not because it contains full note bodies. Retrieval cases and reports are also
+ignored because their queries and relevance judgments can disclose private interests.
 
-Related: [[90-system/Retrieval Guide|Retrieval Guide]] · [[90-system/skills/MOC - Skills|Skills]] · [[90-system/bases/MOC - Bases|Bases]] · [[90-system/MOC - System|System]]
+Related: [[90-system/Retrieval Guide|Retrieval Guide]] · [[90-system/Retrieval Evaluation|Retrieval Evaluation]] · [[90-system/skills/MOC - Skills|Skills]] · [[90-system/bases/MOC - Bases|Bases]] · [[90-system/MOC - System|System]]

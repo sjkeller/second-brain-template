@@ -1,0 +1,27 @@
+# Merge this table into ~/.codex/config.toml after replacing __VAULT_ROOT__ with the
+# absolute path of the private vault. Forward slashes work on Windows and remain portable.
+[mcp_servers.second-brain]
+command = "python3"
+args = ["__VAULT_ROOT__/90-system/automation/mcp_server.py", "--vault-root", "__VAULT_ROOT__"]
+cwd = "__VAULT_ROOT__"
+enabled = true
+required = false
+startup_timeout_sec = 10
+tool_timeout_sec = 60
+enabled_tools = [
+  "search_vault",
+  "build_context_pack",
+  "related_notes",
+  "read_note",
+  "vault_status",
+  "capture_note",
+  "capture_raw_source",
+]
+default_tools_approval_mode = "writes"
+
+# Keep both capture tools explicitly approval-gated even if the default changes later.
+[mcp_servers.second-brain.tools.capture_note]
+approval_mode = "prompt"
+
+[mcp_servers.second-brain.tools.capture_raw_source]
+approval_mode = "prompt"

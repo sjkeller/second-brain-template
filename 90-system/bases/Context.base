@@ -1,0 +1,23 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - 'file.path != this.file.path'
+    - 'file.hasLink(this.file)'
+    - not:
+        - file.inFolder("90-system/templates")
+properties:
+  status:
+    displayName: Status
+  updated:
+    displayName: Updated
+views:
+  - type: table
+    name: "Linked notes"
+    groupBy:
+      property: note.type
+      direction: ASC
+    order:
+      - file.name
+      - type
+      - status
+      - updated

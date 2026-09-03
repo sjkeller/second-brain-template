@@ -3,7 +3,7 @@ id: home
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-02
 aliases:
   - Second Brain Home
 tags:
@@ -12,9 +12,27 @@ tags:
 
 # Second Brain
 
-This is the human and agent entry point. Capture first, organize by actionability, and connect durable knowledge with explicit links.
+This is the human and agent entry point. Start with what needs attention, then browse by
+area. Capture first, organize by actionability, and connect durable knowledge with explicit
+links.
 
-## Work
+## Now
+
+![[90-system/bases/Active Work.base#Active]]
+
+## Review
+
+![[90-system/bases/Review.base#Review due]]
+
+![[90-system/bases/Review.base#AI review]]
+
+## Capture
+
+![[90-system/bases/Triage.base#Needs triage]]
+
+![[90-system/bases/Review.base#Raw sources to seal]]
+
+## Browse
 
 - [[00-inbox/MOC - Inbox|Inbox]] — unprocessed captures.
 - [[10-projects/MOC - Projects|Projects]] — active outcomes with a finish condition.
@@ -31,8 +49,10 @@ This is the human and agent entry point. Capture first, organize by actionabilit
 - [[90-system/Vault Contract|Vault Contract]]
 - [[90-system/Link Policy|Link Policy]]
 - [[90-system/Retrieval Guide|Retrieval Guide]]
+- [[90-system/MCP Integration|MCP Integration]] — local access from Claude Code and Codex.
 - [[90-system/automation/MOC - Automation|Automation]] — the deterministic commands.
 - [[90-system/bases/MOC - Bases|Bases]] — property dashboards for humans.
+- [[README|Repository guide]] — setup, daily use, and MCP registration.
 - [[90-system/MOC - System|System map]]
 
 Start a new note from [[90-system/templates/MOC - Templates|Templates]]. Put files and media under [[99-attachments/MOC - Attachments|Attachments]].

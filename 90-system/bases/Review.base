@@ -1,0 +1,49 @@
+filters:
+  and:
+    - 'file.ext == "md"'
+    - not:
+        - file.inFolder("90-system/templates")
+    - not:
+        - file.inFolder("80-archive")
+properties:
+  status:
+    displayName: Status
+  review_on:
+    displayName: Review on
+  ai_review:
+    displayName: AI review
+  updated:
+    displayName: Updated
+views:
+  - type: table
+    name: "Review due"
+    filters:
+      and:
+        - 'review_on != null'
+        - 'review_on <= today()'
+    order:
+      - file.name
+      - type
+      - review_on
+      - status
+      - updated
+  - type: table
+    name: "AI review"
+    filters:
+      and:
+        - 'ai_review == "pending"'
+    order:
+      - file.name
+      - type
+      - ai_review
+      - updated
+  - type: table
+    name: "Raw sources to seal"
+    filters:
+      and:
+        - 'type == "raw-source"'
+        - 'status != "immutable"'
+    order:
+      - file.name
+      - status
+      - created

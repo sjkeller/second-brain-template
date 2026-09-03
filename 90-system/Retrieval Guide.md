@@ -43,6 +43,10 @@ Filter before widening the limit: `--type concept`, `--tag learning`, `--since 2
 usually beat raising `--limit`. If a query returns nothing, try `--fuzzy` before rephrasing;
 short prefixes already expand automatically.
 
+Before tuning ranking or adding another retrieval engine, create private relevance cases
+and run the measured baseline in [[90-system/Retrieval Evaluation|Retrieval Evaluation]].
+Do not judge retrieval quality from a few memorable searches.
+
 ## Retrieval order
 
 1. Relevant MOC.
@@ -55,8 +59,9 @@ short prefixes already expand automatically.
 
 Retrieval is lexical and local. It stays fast because parsing is incremental and queries
 walk an inverted index rather than the whole vault; [[90-system/automation/MOC - Automation|Automation]]
-describes the mechanism. For semantic retrieval at larger scale, add a local embedding
-index later, but keep lexical retrieval as the inspectable fallback. Never send the entire
-private vault to a remote embedding service without explicit consent.
+describes the mechanism. Semantic retrieval is optional and gated by
+[[90-system/Retrieval Evaluation|Retrieval Evaluation]]. Keep lexical retrieval as the
+inspectable fallback. Never send private vault text to a remote embedding service without
+explicit consent.
 
-Related: [[90-system/Agent Orientation|Agent Orientation]] · [[90-system/indexes/Vault Index|Vault Index]]
+Related: [[90-system/Agent Orientation|Agent Orientation]] · [[90-system/Retrieval Evaluation|Retrieval Evaluation]] · [[90-system/indexes/Vault Index|Vault Index]]

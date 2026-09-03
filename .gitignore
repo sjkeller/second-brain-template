@@ -20,3 +20,16 @@ __pycache__/
 90-system/indexes/.vault-cache.sqlite3
 90-system/indexes/.vault-cache.sqlite3-wal
 90-system/indexes/.vault-cache.sqlite3-shm
+
+# Local MCP coordination and privacy-preserving call audit. Both are disposable state.
+90-system/indexes/.mcp-write.lock
+90-system/indexes/mcp-audit.jsonl
+
+# Private retrieval judgments and generated evaluation reports. The fictional example is
+# versioned so the schema remains discoverable without publishing personal queries.
+90-system/evals/*.jsonl
+90-system/evals/*.json
+!90-system/evals/*.example.jsonl
+
+# Reviewed merge bodies are temporary local inputs, never canonical vault content.
+90-system/indexes/.merge-drafts/

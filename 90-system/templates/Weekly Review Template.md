@@ -12,6 +12,9 @@ tags:
 
 Parent: [[50-journal/weekly/MOC - Weekly Reviews|Weekly Reviews]]
 
+> [!abstract] Week at a glance
+> State the most important outcome, concern, and next-week focus.
+
 ## Wins and outcomes
 
 ## Process inbox

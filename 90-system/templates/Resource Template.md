@@ -12,6 +12,9 @@ tags: []
 
 Parent: [[30-resources/MOC - Resources|Resources]]
 
+> [!abstract] At a glance
+> State what this resource contains and when it is useful.
+
 ## Topic
 
 What this collects and where its boundary sits.

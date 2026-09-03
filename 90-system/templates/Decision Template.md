@@ -6,15 +6,24 @@ created: "{{date:YYYY-MM-DD}}"
 updated: "{{date:YYYY-MM-DD}}"
 aliases: []
 tags: []
+review_on:
+supersedes: []
+superseded_by: []
+depends_on: []
+required_by: []
+supports: []
+supported_by: []
+contradicts: []
 ---
 
 # {{title}}
 
 Parent: [[60-decisions/MOC - Decisions|Decisions]]
 
-## Context
+> [!abstract] Decision
+> State the choice and its present scope in one to three sentences.
 
-## Decision
+## Context
 
 ## Alternatives considered
 
@@ -24,7 +33,7 @@ Parent: [[60-decisions/MOC - Decisions|Decisions]]
 
 ## Review trigger
 
-State what new evidence or date would justify revisiting this decision.
+State what new evidence or `review_on` date would justify revisiting this decision.
 
 ## Links
 

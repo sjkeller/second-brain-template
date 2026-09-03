@@ -43,6 +43,11 @@ and other nonessential core plugins remain disabled in the template; enable them
 when you deliberately need them. The [[90-system/bases/MOC - Bases|Bases]] dashboards use
 the supported core Bases plugin and need no community dependency.
 
+The safe capture and URI bridge is documented in
+[[90-system/Obsidian Integration|Obsidian Integration]]. It includes an importable official
+Web Clipper template but does not install a browser extension, launch Obsidian, or enable a
+remote model interpreter.
+
 ## Graph view
 
 The global graph starts with arrows enabled, only existing files, orphans visible, and
@@ -104,5 +109,11 @@ hook that stamps `updated:` and reports unresolved links after an edit. It invok
 `python3`, available on the supported Windows and Linux hosts. Claude Code asks you to
 trust this folder once before either takes effect; until then you will still see permission
 prompts and the hook will not run.
+
+For one private vault shared across unrelated Claude Code and Codex projects, use the local
+stdio server and user-scoped hook setup in [[90-system/MCP Integration|MCP Integration]].
+That integration reads and writes the same Markdown files Obsidian sees; it does not add a
+parallel knowledge store. Configure it only after this template has been synchronised into
+the private vault.
 
 Related: [[90-system/Link Policy|Link Policy]] · [[90-system/Design Rationale|Design Rationale]] · [[Home]]

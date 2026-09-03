@@ -12,7 +12,10 @@ tags: []
 
 Parent: [[40-knowledge/organizations/MOC - Organizations|Organizations]]
 
-## What it is
+> [!abstract] At a glance
+> State what this organization is and why it appears in the vault.
+
+## Factual context
 
 Sector, size, and the reason it matters to you.
 
@@ -31,3 +34,7 @@ State each claim with its source and the date you learned it.
 - Sources:
 
 ## Open questions
+
+## Context
+
+![[90-system/bases/Context.base#Linked notes]]
