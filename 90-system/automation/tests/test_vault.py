@@ -945,6 +945,12 @@ class CheckTests(VaultFixture):
         cache = vault.open_cache(self.root)
 
         class RaceCache:
+            def __enter__(inner_self):
+                return inner_self
+
+            def __exit__(inner_self, *args):
+                inner_self.close()
+
             def notes(inner_self):
                 notes = cache.notes()
                 path.unlink()
