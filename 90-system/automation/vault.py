@@ -34,6 +34,7 @@ from typing import Any, Iterable, Iterator
 from urllib.parse import quote, urlencode
 
 SCHEMA_VERSION = 5
+CACHE_BUSY_SECONDS = 1.0
 
 WIKILINK_RE = re.compile(r"!?\[\[([^\]]+)\]\]")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*$", re.MULTILINE)
@@ -551,24 +552,36 @@ class VaultCache:
         self.root = root
         self.path = path or (root / CACHE_RELATIVE)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.connection = sqlite3.connect(self.path)
+        self.connection = sqlite3.connect(self.path, timeout=CACHE_BUSY_SECONDS)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("PRAGMA synchronous=NORMAL")
-        self._ensure_schema()
+        try:
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA synchronous=NORMAL")
+            self._ensure_schema()
+        except BaseException:
+            self.connection.close()
+            raise
 
-    def _ensure_schema(self) -> None:
-        version = None
+    def _schema_version(self) -> int | None:
         try:
             row = self.connection.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
-            version = int(row["value"]) if row else None
-        except sqlite3.DatabaseError:
-            version = None
-        if version != SCHEMA_VERSION:
+        except sqlite3.OperationalError as error:
+            if "no such table: meta" not in str(error):
+                raise  # A busy/corrupt cache is not permission to drop its schema.
+            return None
+        return int(row["value"]) if row else None
+
+    def _ensure_schema(self) -> None:
+        if self._schema_version() == SCHEMA_VERSION:
+            return
+        with self.connection:
+            self.connection.execute("BEGIN IMMEDIATE")
+            # Another client may have initialized it while this connection waited.
+            if self._schema_version() == SCHEMA_VERSION:
+                return
             for table in ("postings", "trigrams", "docs", "meta"):
                 self.connection.execute(f"DROP TABLE IF EXISTS {table}")
-            self.connection.executescript(
-                """
+            schema = """
                 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
                 CREATE TABLE docs (
                     path TEXT PRIMARY KEY,
@@ -600,11 +613,14 @@ class VaultCache:
                     PRIMARY KEY (tri, term)
                 ) WITHOUT ROWID;
                 """
-            )
+            # executescript() would implicitly commit before DDL, exposing a partial
+            # schema to other Codex/Claude processes during simultaneous startup.
+            for statement in schema.split(";"):
+                if statement.strip():
+                    self.connection.execute(statement)
             self.connection.execute(
                 "INSERT INTO meta(key, value) VALUES('schema_version', ?)", (str(SCHEMA_VERSION),)
             )
-            self.connection.commit()
 
     def sync(self) -> dict[str, int]:
         """Bring the cache in line with the filesystem. Returns per-action counts."""
@@ -623,18 +639,18 @@ class VaultCache:
             if cached.get(relative) != (mtime_ns, size)
         ]
 
-        for relative in removed:
-            self._delete(relative)
-        for relative in sorted(changed):
-            path, mtime_ns, size = on_disk[relative]
-            raw = path.read_text(encoding="utf-8-sig")
-            self._upsert(build_note(path, relative, raw, mtime_ns, size))
+        with self.connection:
+            for relative in removed:
+                self._delete(relative)
+            for relative in sorted(changed):
+                path, mtime_ns, size = on_disk[relative]
+                raw = path.read_text(encoding="utf-8-sig")
+                self._upsert(build_note(path, relative, raw, mtime_ns, size))
 
-        if removed or changed:
-            self.connection.execute(
-                "DELETE FROM trigrams WHERE term NOT IN (SELECT term FROM postings)"
-            )
-            self.connection.commit()
+            if removed or changed:
+                self.connection.execute(
+                    "DELETE FROM trigrams WHERE term NOT IN (SELECT term FROM postings)"
+                )
         return {"total": len(on_disk), "reparsed": len(changed), "removed": len(removed)}
 
     def _delete(self, relative: str) -> None:
@@ -787,6 +803,12 @@ class VaultCache:
     def close(self) -> None:
         self.connection.close()
 
+    def __enter__(self) -> "VaultCache":
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
+        self.close()
+
 
 def open_cache(root: Path, rebuild: bool = False) -> VaultCache:
     cache_path = root / CACHE_RELATIVE
@@ -796,7 +818,11 @@ def open_cache(root: Path, rebuild: bool = False) -> VaultCache:
             if candidate.exists():
                 candidate.unlink()
     cache = VaultCache(root, cache_path)
-    cache.sync()
+    try:
+        cache.sync()
+    except BaseException:
+        cache.close()
+        raise
     return cache
 
 
@@ -1209,8 +1235,8 @@ def retrieval_filtered(notes: list[Note], include_templates: bool) -> list[Note]
 
 
 def command_index(root: Path, compact: bool) -> int:
-    cache = open_cache(root)
-    notes = cache.notes()
+    with open_cache(root) as cache:
+        notes = cache.notes()
     by_path, by_stem = note_maps(notes)  # Built once; previously rebuilt per note.
     assets = asset_maps(root)
     records = []
@@ -1276,7 +1302,6 @@ def command_index(root: Path, compact: bool) -> int:
     ]
     lines.extend(f"- {note.path} — {note.title}" for note in notes)
     (output_dir / "Vault Index.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    cache.close()
     emit({"indexed": len(notes), "json": GENERATED_JSON, "markdown": GENERATED_MARKDOWN}, compact)
     return 0
 
@@ -1397,9 +1422,8 @@ def engineering_metadata_findings(note: Note) -> list[dict[str, Any]]:
 
 def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
                   stale_days: int, max_tags: int) -> int:
-    cache = open_cache(root)
-    notes = cache.notes()
-    cache.close()
+    with open_cache(root) as cache:
+        notes = cache.notes()
     by_path, by_stem = note_maps(notes)
     assets = asset_maps(root)
     adjacency, unresolved = graph(notes, assets)
@@ -1694,9 +1718,8 @@ def rank(cache: VaultCache, query: str, options: QueryOptions) -> list[tuple[flo
 
 
 def command_query(root: Path, query: str, options: QueryOptions, compact: bool) -> int:
-    cache = open_cache(root)
-    ranked = rank(cache, query, options)
-    cache.close()
+    with open_cache(root) as cache:
+        ranked = rank(cache, query, options)
     terms = set(tokenize(query))
     results = [
         {
@@ -2506,9 +2529,8 @@ def truncate_for_pack(text: str, limit: int) -> str:
 
 def command_pack(root: Path, query: str, options: QueryOptions, budget_tokens: int) -> int:
     """Assemble one Markdown bundle under a conservative four-characters/token ceiling."""
-    cache = open_cache(root)
-    ranked = rank(cache, query, options)
-    cache.close()
+    with open_cache(root) as cache:
+        ranked = rank(cache, query, options)
     budget_tokens = max(budget_tokens, 1)
     budget_chars = budget_tokens * CHARS_PER_TOKEN
     chunks: list[str] = []
@@ -2560,9 +2582,8 @@ def command_pack(root: Path, query: str, options: QueryOptions, budget_tokens: i
 
 
 def command_related(root: Path, requested: str, depth: int, compact: bool) -> int:
-    cache = open_cache(root)
-    notes = cache.notes()
-    cache.close()
+    with open_cache(root) as cache:
+        notes = cache.notes()
     by_path, by_stem = note_maps(notes)
     target = resolve_target(requested, by_path, by_stem)
     if not target:
@@ -2596,9 +2617,8 @@ def command_related(root: Path, requested: str, depth: int, compact: bool) -> in
 
 
 def command_tasks(root: Path, prefix: str | None, state: str, compact: bool) -> int:
-    cache = open_cache(root)
-    notes = cache.notes()
-    cache.close()
+    with open_cache(root) as cache:
+        notes = cache.notes()
     results = []
     for note in notes:
         if note.path.startswith(RETRIEVAL_EXCLUDED):
@@ -2618,9 +2638,8 @@ def command_tasks(root: Path, prefix: str | None, state: str, compact: bool) -> 
 
 
 def command_tags(root: Path, min_count: int, compact: bool) -> int:
-    cache = open_cache(root)
-    notes = cache.notes()
-    cache.close()
+    with open_cache(root) as cache:
+        notes = cache.notes()
     counter: Counter[str] = Counter()
     for note in notes:
         counter.update(note_tags(note.metadata))
@@ -2642,9 +2661,8 @@ def command_tags(root: Path, min_count: int, compact: bool) -> int:
 
 
 def command_stale(root: Path, days: int, compact: bool) -> int:
-    cache = open_cache(root)
-    notes = cache.notes()
-    cache.close()
+    with open_cache(root) as cache:
+        notes = cache.notes()
     today = date.today()
     threshold = today - timedelta(days=days)
     results = []
@@ -2789,9 +2807,8 @@ def command_readability(
         emit({"error": "readability_limits_must_be_positive"}, compact)
         return 2
     prefix = path_prefix.replace("\\", "/") if path_prefix else None
-    cache = open_cache(root)
-    notes = cache.notes()
-    cache.close()
+    with open_cache(root) as cache:
+        notes = cache.notes()
     candidates = [
         note for note in notes
         if str(note.metadata.get("type", "")).strip() in READABILITY_TYPES
@@ -3619,11 +3636,10 @@ def command_new(root: Path, note_type: str, title: str, folder: str | None, tags
 
 
 def command_cache(root: Path, rebuild: bool, compact: bool) -> int:
-    cache = open_cache(root, rebuild=rebuild)
-    payload = cache.stats()
+    with open_cache(root, rebuild=rebuild) as cache:
+        payload = cache.stats()
     payload["rebuilt"] = rebuild
     payload["path"] = CACHE_RELATIVE
-    cache.close()
     emit(payload, compact)
     return 0
 
