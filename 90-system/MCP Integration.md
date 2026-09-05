@@ -3,7 +3,7 @@ id: mcp-integration
 type: system
 status: active
 created: 2026-09-02
-updated: 2026-09-03
+updated: 2026-09-05
 tags:
   - system/agent
   - system/integration
@@ -149,6 +149,37 @@ If a server fails to start, run the exact configured command in a terminal. Conf
 errors go to stderr; protocol responses alone use stdout. A stale
 `90-system/indexes/.mcp-write.lock` is recovered after five minutes, but an active lock
 means another capture is still in progress.
+
+## Timeout and disconnect recovery
+
+Server version `1.1.1` separates the connection loop from tool execution. A slow read no
+longer blocks pings, tool discovery, or cancellation. Reads have a default 30-second
+deadline, including admitted queue time. Tool names, registration commands, approvals, and
+capture hook matchers have not changed. Restart existing connections after updating the
+server; confirm the new version in server discovery/initialization.
+
+| Result | Next action |
+| --- | --- |
+| `retrieval_timeout` | The connection is still usable. Narrow the request or inspect disk/cache availability before retrying. |
+| `cache_busy` | Another process holds the cache writer lock. Wait briefly and retry the tool; reconnecting is unnecessary. |
+| `server_busy` | Wait for earlier tool calls; avoid flooding the connection with retries. |
+| `cache_unavailable` | Stop clients and vault maintenance first; inspect the cache before an offline `vault.py cache --rebuild`. Never delete a live SQLite/WAL/SHM set. |
+| `tool_worker_failed` | A tool process failed. A read may be retried; check for an existing note before retrying an uncertain capture. |
+
+For a measured large-vault workload, an optional `--read-timeout-seconds 45` may be added
+to the existing server arguments. Keep this deadline below the client's tool-call timeout;
+it does not replace repairing encoding, cache, or filesystem faults. Initialization stays
+separate from tool work. Local root validation still requires an accessible vault folder.
+
+An already-started capture finishes its guarded write even if cancelled; its reply is
+suppressed after cancellation. Read timeouts never interrupt captures. Search by the
+intended title/path before repeating a capture whose result was lost.
+
+Slow/error diagnostics are written to the client's captured server stderr, using only the
+event, tool name, and elapsed milliseconds. No note text, query, request ID, or path is
+logged. Record that event and the incident time if a failure persists. The detailed
+reproductions, trade-offs, and deployment limits are in
+[[90-system/reports/MCP Reliability Investigation|MCP Reliability Investigation]].
 
 ## Compatibility contract
 
