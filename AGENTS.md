@@ -66,6 +66,9 @@ canonical note on external evidence requires a proposed diff and explicit user c
 - Every durable note links to at least one MOC. Add lateral links only when the
   relationship is real; `check` reports notes that have no MOC edge.
 - Record consequential choices in `60-decisions`.
+- For requested repository context, session closeout, or durable corrections, read
+  `90-system/Engineering Memory.md`. Extend existing subjects before creating engineering
+  records; use the existing capture, triage, and review skills.
 - Capture verbatim external material as `raw-source`, then seal its delimited payload with
   `python3 90-system/automation/vault.py source-seal "<path>.md"`. Never edit a sealed
   payload; restore it or create a superseding capture.

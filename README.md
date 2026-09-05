@@ -70,6 +70,22 @@ private knowledge.
 
 ## Everyday use
 
+### Optional engineering memory
+
+Use the [Engineering Memory guide](90-system/Engineering%20Memory.md) for repository
+onboarding, development-session records, bug investigations, experiments, and scoped
+coding patterns. The existing capture, triage, and review skills cover these workflows.
+Existing Projects and Concepts MOCs own their records; Home keeps its current dashboards.
+
+Start with the project note you already have. Add a repository profile or separate work
+record only when it serves an independent purpose. Keep a pattern and its exceptions in
+one note. Use links and heading embeds when the same status or outcome is needed elsewhere.
+
+The guide includes one shared instruction snippet for Codex and Claude Code. MCP retains
+seven tools: optional structured feedback is part of `capture_note`, so existing capture
+approvals and hooks still apply. Restart the MCP connection after updating its server to
+refresh the tool schema; no new server registration or tool matcher is needed.
+
 ### Capture first
 
 Put unprocessed material in `00-inbox`. When creating a structured note, let the automation

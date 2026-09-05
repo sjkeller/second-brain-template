@@ -3,7 +3,7 @@ id: moc-automation
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-02
+updated: 2026-09-05
 tags:
   - system/moc
   - system/automation
@@ -43,6 +43,10 @@ and compatibility details are in [[90-system/MCP Integration|MCP Integration]].
 
 ## Author
 
+Optional engineering note types and feedback metadata are defined in
+[[90-system/Engineering Memory|Engineering Memory]]. They use the existing creation,
+capture, validation, and merge mechanics.
+
 - `... new --type concept --title "Name" --tags "a,b"` — renders the template, generates
   the id, stamps the dates, and links the parent MOC under its `vault:links` anchor.
   `--dry-run` prints the note without writing it.
@@ -77,6 +81,8 @@ and compatibility details are in [[90-system/MCP Integration|MCP Integration]].
     freshness problems, and typed relations whose inverse declaration is missing.
   - `ai_review: pending` must have the visible AI-draft warning callout; other values are
     rejected as warnings. A non-empty `review_on` must be an ISO date.
+  - Code-pattern and feedback metadata is validated under `metadata_issues`: scope,
+    evidence list, confidence state, and verification date where required.
   - `--strict` fails on warnings too; `--quiet` prints the summary and errors only.
 
 Raw-source payload text remains indexed for explicit retrieval, but it cannot contribute

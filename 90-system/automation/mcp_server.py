@@ -27,7 +27,7 @@ from urllib.parse import urlparse
 
 
 SERVER_NAME = "second-brain"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.0"
 MODERN_PROTOCOL = "2026-07-28"
 LEGACY_PROTOCOLS = (
     "2025-11-25",
@@ -222,13 +222,30 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Create one new AI-review draft in 00-inbox from user-provided or session-synthesized "
             "text and add its parent-MOC link. Never edits or replaces existing knowledge "
-            "content. Do not use for verbatim external material; use capture_raw_source instead."
+            "content. Optional feedback records scope and evidence for a correction awaiting "
+            "review. Search for an existing subject first. Do not use for verbatim external "
+            "material; use capture_raw_source instead."
         ),
         "inputSchema": object_schema(
             {
                 "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE_CHARS},
                 "content": {"type": "string", "minLength": 1, "maxLength": MAX_NOTE_CHARS},
                 "tags": QUERY_PROPERTIES["tags"],
+                "feedback": object_schema(
+                    {
+                        "scope": {"type": "string", "minLength": 1, "maxLength": 300},
+                        "evidence": {
+                            "type": "array", "minItems": 1, "maxItems": 8,
+                            "uniqueItems": True,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+                        },
+                        "project": {
+                            "type": "string", "minLength": 1, "maxLength": 500,
+                            "description": "Optional exact vault-relative .md path to an existing project or repository note.",
+                        },
+                    },
+                    ["scope", "evidence"],
+                ),
             },
             ["title", "content"],
         ),
@@ -729,9 +746,33 @@ def write_new_note_and_moc(root: Path, draft: dict[str, Any], final_text: str, t
                     pass
 
 
+def feedback_metadata(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Parse the narrow feedback extension; callers cannot set review or trust state."""
+    if "feedback" not in arguments:
+        return {}
+    feedback = require_object(arguments["feedback"], "feedback")
+    reject_unknown(feedback, {"scope", "evidence", "project"})
+    scope = string_value(feedback, "scope", required=True, minimum=1, maximum=300).strip()
+    if not scope or any(ord(character) < 32 for character in scope):
+        raise ToolInputError("invalid_argument", "scope must be nonblank single-line text", field="scope")
+    evidence = string_list(feedback, "evidence", maximum_items=8, maximum_chars=1000)
+    if not evidence:
+        raise ToolInputError("missing_argument", "feedback needs at least one evidence reference", field="evidence")
+    result: dict[str, Any] = {
+        "capture_kind": "feedback", "scope": scope, "evidence": evidence,
+        "confidence": "hypothesis",
+    }
+    if "project" in feedback:
+        project = string_value(feedback, "project", required=True, minimum=1, maximum=500)
+        if not project.strip() or any(ord(c) < 32 or c in "[]|#" for c in project):
+            raise ToolInputError("invalid_argument", "project must be an exact note path", field="project")
+        result["project"] = project
+    return result
+
+
 def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
     arguments = require_object(raw_arguments)
-    reject_unknown(arguments, {"title", "content", "tags"})
+    reject_unknown(arguments, {"title", "content", "tags", "feedback"})
     title = validate_title(arguments)
     content = string_value(
         arguments,
@@ -743,6 +784,7 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
     if not content:
         raise ToolInputError("invalid_argument", "content must not be blank", field="content")
     tags = validate_tags(arguments)
+    feedback = feedback_metadata(arguments)
 
     lock_path = root / "90-system" / "indexes" / ".mcp-write.lock"
     with VaultWriteLock(lock_path):
@@ -751,6 +793,19 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         note_id = str(metadata.get("id", "")).strip()
         existing_notes = vault.scan_notes(root)
         ensure_unique_identity(existing_notes, title, note_id)
+        if "project" in feedback:
+            resolved = vault.resolve_vault_path(root, feedback["project"])
+            exact_path = feedback["project"].replace("\\", "/")
+            project_note = next(
+                (note for note in existing_notes
+                 if resolved and note.path == resolved[1] == exact_path), None
+            )
+            if project_note is None or str(project_note.metadata.get("type", "")) not in {"project", "repository"}:
+                raise ToolInputError(
+                    "project_not_found", "project must identify an existing project or repository note",
+                    field="project",
+                )
+            feedback["project"] = f"[[{project_note.path.removesuffix('.md')}]]"
         body = (
             f"# {title}\n\n"
             "> [!warning] AI draft — not yet human-reviewed\n"
@@ -767,7 +822,7 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         final_text = vault.replace_note_body(draft["content"], body)
         moc_path = root / draft["moc"]
         final_text = vault.ensure_parent_moc_link(final_text, root, moc_path)
-        final_text = vault.set_frontmatter(final_text, {"ai_review": "pending"})
+        final_text = vault.set_frontmatter(final_text, {**feedback, "ai_review": "pending"})
         validate_candidate_note(root, draft["path"], final_text, existing_notes)
         write_new_note_and_moc(root, draft, final_text, title)
     return {
@@ -776,6 +831,7 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         "type": "note",
         "status": "draft",
         "ai_review": "pending",
+        **feedback,
         "moc": draft["moc"],
         "next_action": "Review the visible AI draft, add evidence and links, then triage it from 00-inbox.",
     }

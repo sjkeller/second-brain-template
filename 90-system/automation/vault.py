@@ -89,21 +89,29 @@ SEMANTIC_TRIAL_CATEGORY_RECALL_AT_5 = 0.75
 KNOWN_TYPES = (
     "moc", "project", "area", "resource", "source", "raw-source", "concept", "person",
     "organization", "journal", "review", "decision", "note", "redirect", "system",
+    "repository", "feature", "bug", "incident", "experiment", "devlog", "code-pattern",
 )
 
 # Folder each note type belongs in. `check placement` verifies membership; `new` uses it
 # to choose a destination. Types absent from this map are unconstrained.
 TYPE_FOLDERS = {
     "project": "10-projects",
+    "repository": "10-projects",
+    "feature": "10-projects",
+    "bug": "10-projects",
+    "incident": "10-projects",
+    "experiment": "10-projects",
     "area": "20-areas",
     "resource": "30-resources",
     "source": "30-resources/sources",
     "raw-source": "30-resources/sources/raw",
     "concept": "40-knowledge/concepts",
+    "code-pattern": "40-knowledge/concepts",
     "person": "40-knowledge/people",
     "organization": "40-knowledge/organizations",
     "journal": "50-journal/daily",
     "review": "50-journal/weekly",
+    "devlog": "50-journal/dev",
     "decision": "60-decisions",
     "system": "90-system",
     "note": "00-inbox",
@@ -120,6 +128,13 @@ MOC_EXEMPT_PREFIXES = ("80-archive/", "90-system/", "99-attachments/")
 TYPE_TEMPLATES = {
     "note": "Note Template.md",
     "project": "Project Template.md",
+    "repository": "Repository Profile Template.md",
+    "feature": "Feature Spec Template.md",
+    "bug": "Bug Investigation Template.md",
+    "incident": "Incident Template.md",
+    "experiment": "Experiment Template.md",
+    "devlog": "Dev Session Template.md",
+    "code-pattern": "Code Pattern Template.md",
     "area": "Area Template.md",
     "resource": "Resource Template.md",
     "source": "Source Template.md",
@@ -163,11 +178,13 @@ DEFAULT_READABILITY_MAX_LEAD_WORDS = 120
 DEFAULT_READABILITY_MAX_PARAGRAPH_WORDS = 120
 READABILITY_TYPES = {
     "project", "area", "resource", "source", "concept", "person", "organization",
-    "decision", "note",
+    "decision", "note", "repository", "feature", "bug", "incident", "experiment",
+    "devlog", "code-pattern",
 }
+PATTERN_CONFIDENCE = {"confirmed", "observed", "hypothesis", "conflicted"}
 LEAD_LABELS = {
     "summary", "current status", "decision", "takeaway", "at a glance", "claim",
-    "outcome", "what it is", "who",
+    "outcome", "what it is", "who", "rule", "result",
 }
 AI_REVIEW_MARKER = "[!warning] ai draft"
 
@@ -1344,6 +1361,40 @@ def check_skill_pointers(root: Path) -> list[dict[str, str]]:
     return findings
 
 
+def engineering_metadata_findings(note: Note) -> list[dict[str, Any]]:
+    """Validate evidence records without inferring truth from their wording."""
+    metadata = note.metadata
+    feedback = metadata.get("capture_kind") == "feedback"
+    pattern = metadata.get("type") == "code-pattern"
+    if not (feedback or pattern):
+        return []
+    findings: list[dict[str, Any]] = []
+    required = feedback or str(metadata.get("status", "")) in {"active", "accepted", "ready"}
+    for key in ("scope", "confidence"):
+        value = metadata.get(key, "")
+        if not isinstance(value, str) or any(ord(c) < 32 for c in value):
+            findings.append({"path": note.path, "invalid_field": key})
+        elif required and not value.strip():
+            findings.append({"path": note.path, "missing": [key]})
+    confidence = metadata.get("confidence", "")
+    if isinstance(confidence, str) and confidence and confidence not in PATTERN_CONFIDENCE:
+        findings.append({"path": note.path, "invalid_confidence": confidence})
+    evidence = metadata.get("evidence", [])
+    if not isinstance(evidence, list) or any(
+        not isinstance(item, str) or not item.strip() or any(ord(c) < 32 for c in item)
+        for item in evidence
+    ):
+        findings.append({"path": note.path, "invalid_field": "evidence"})
+    elif required and not evidence:
+        findings.append({"path": note.path, "missing": ["evidence"]})
+    verified = metadata.get("last_verified", "")
+    if verified and parse_date(verified) is None:
+        findings.append({"path": note.path, "invalid_field": "last_verified"})
+    elif pattern and required and not verified:
+        findings.append({"path": note.path, "missing": ["last_verified"]})
+    return findings
+
+
 def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
                   stale_days: int, max_tags: int) -> int:
     cache = open_cache(root)
@@ -1404,6 +1455,8 @@ def command_check(root: Path, compact: bool, strict: bool, quiet: bool,
         note_type = str(note.metadata.get("type", "")).strip()
         if note_type and note_type not in KNOWN_TYPES:
             metadata_missing.append({"path": note.path, "unknown_type": note_type})
+
+        metadata_missing.extend(engineering_metadata_findings(note))
 
         if note_type == "raw-source":
             status = str(note.metadata.get("status", "")).strip()
@@ -3160,7 +3213,7 @@ def replace_note_pair(
 MERGE_EXCLUDED_PREFIXES = (
     RAW_SOURCE_PREFIX, "50-journal/", "80-archive/", "90-system/", "99-attachments/",
 )
-MERGE_EXCLUDED_TYPES = {"moc", "raw-source", "redirect", "review", "journal", "system"}
+MERGE_EXCLUDED_TYPES = {"moc", "raw-source", "redirect", "review", "journal", "devlog", "system"}
 REDIRECT_REMOVED_FIELDS = set(RELATION_FIELDS) | {
     "freshness", "truth_source", "last_verified", "freshness_window_days",
     "observed", "valid_from", "valid_until",

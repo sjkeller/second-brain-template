@@ -36,6 +36,11 @@ Read the Inbox MOC and list what is actually there before touching anything.
 
 ## Boundaries
 
+For engineering records and feedback, read [[90-system/Engineering Memory]] before choosing
+the type or consolidating a rule. File the capture itself when it becomes a new durable
+subject. Keep current project status separate from historical dev-session evidence, using
+links or embeds for reuse. Preserve the AI-review property and callout until human acceptance.
+
 Never bulk-delete, and never merge two notes without explicit confirmation. For an agreed
 merge, follow [[90-system/Safe Merge Policy]]: prepare the reviewed body, show the dry-run
 plan, then apply its exact hash and leave the retired redirect. When a capture is too thin

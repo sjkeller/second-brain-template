@@ -34,7 +34,7 @@ Claude Code 2.1.258.
 | `related_notes` | none | resolved wikilink neighbours |
 | `read_note` | none | one exact Markdown note after narrowing |
 | `vault_status` | none | integrity-check summary and errors |
-| `capture_note` | additive | new `00-inbox` draft with `ai_review: pending` |
+| `capture_note` | additive | new `00-inbox` draft; optional scoped feedback; `ai_review: pending` |
 | `capture_raw_source` | additive | new immutable, hashed raw-source capture |
 
 There is deliberately no generic edit, delete, move, merge-apply, shell, attachment, or
@@ -70,6 +70,11 @@ noise on every read. A hook failure is non-blocking because server enforcement m
 sufficient by itself.
 
 ## Install after the private vault is synchronised
+
+The optional `feedback` argument on `capture_note` is specified in
+[[90-system/Engineering Memory|Engineering Memory]]. It uses the same Inbox transaction
+and review boundary. Existing tool names, approval rules, and hook matchers remain valid;
+restart the MCP connection after updating the server so clients refresh its input schema.
 
 The examples use `python3`, which is the vault contract on Windows and Linux. Use the full
 interpreter path if a client process cannot find it. On a Windows installation that has

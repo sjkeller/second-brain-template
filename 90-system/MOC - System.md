@@ -3,7 +3,7 @@ id: moc-system
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-02
+updated: 2026-09-05
 tags:
   - system/moc
 ---
@@ -22,6 +22,7 @@ they need.
 
 ## How-to guides
 
+- [[90-system/Engineering Memory|Engineering Memory]]
 - [[90-system/MCP Integration|MCP Integration]]
 - [[90-system/Obsidian Integration|Obsidian Integration]]
 - [[90-system/Human Usability Evaluation|Human Usability Evaluation]]

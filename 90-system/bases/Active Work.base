@@ -31,3 +31,15 @@ views:
       - status
       - review_on
       - updated
+  - type: table
+    name: "Investigations"
+    filters:
+      or:
+        - 'type == "bug"'
+        - 'type == "incident"'
+        - 'type == "experiment"'
+    order:
+      - file.name
+      - type
+      - status
+      - updated

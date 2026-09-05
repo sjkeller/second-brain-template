@@ -275,6 +275,112 @@ class RetrievalTests(McpVaultFixture):
 
 
 class CaptureTests(McpVaultFixture):
+    def test_feedback_uses_existing_capture_transaction_and_structured_properties(self) -> None:
+        project = self.write("10-projects/Example.md", note_text("example", "repository", "Example", "Repository context."))
+        original = project.read_bytes()
+        for modern in (False, True):
+            with self.subTest(modern=modern):
+                result = self.call("capture_note", {
+                    "title": f"Parser correction {modern}",
+                    "content": "Prefer explicit parse errors. Exceptions still need review.",
+                    "feedback": {
+                        "scope": "Example: parser boundary # not global",
+                        "evidence": ['User correction: "explicit errors", revision abc123'],
+                        "project": "10-projects/Example.md",
+                    },
+                }, modern=modern)
+                self.assertFalse(result["isError"], result)
+                payload = result["structuredContent"]
+                text = (self.root / payload["path"]).read_text(encoding="utf-8")
+                metadata, body = mcp.vault.parse_frontmatter(text)
+                self.assertEqual(metadata["capture_kind"], "feedback")
+                self.assertEqual(metadata["scope"], "Example: parser boundary # not global")
+                self.assertEqual(metadata["evidence"], ['User correction: "explicit errors", revision abc123'])
+                self.assertEqual(metadata["project"], "[[10-projects/Example]]")
+                self.assertEqual(metadata["confidence"], "hypothesis")
+                self.assertEqual(metadata["ai_review"], "pending")
+                self.assertEqual(metadata["type"], "note")
+                self.assertEqual(metadata["status"], "draft")
+                self.assertNotIn("last_verified", metadata)
+                self.assertIn("[!warning] AI draft", body)
+                self.assertEqual(mcp.vault.engineering_metadata_findings(mcp.vault.read_note(self.root, self.root / payload["path"])), [])
+        self.assertEqual(project.read_bytes(), original)
+
+    def test_invalid_feedback_is_rejected_before_any_note_or_moc_write(self) -> None:
+        valid = {"scope": "parser", "evidence": ["Owner correction in session"]}
+        cases = [None, {}, {**valid, "scope": "   "}, {**valid, "scope": "a\nb"},
+                 {**valid, "scope": ["a"]}, {**valid, "evidence": "source"},
+                 {**valid, "evidence": []}, {**valid, "evidence": ["same", "SAME"]},
+                 {**valid, "evidence": ["line\nbreak"]}, {**valid, "evidence": ["x" * 1001]},
+                 {**valid, "evidence": [str(i) for i in range(9)]},
+                 {**valid, "confidence": "confirmed"}, {**valid, "ai_review": "accepted"},
+                 {**valid, "last_verified": TODAY}, {**valid, "project": ""}]
+        before = {str(p): p.read_bytes() for p in self.root.rglob("*.md")}
+        for feedback in cases:
+            with self.subTest(feedback=feedback):
+                result = self.call("capture_note", {"title": "Rejected", "content": "Correction", "feedback": feedback})
+                self.assertTrue(result["isError"], result)
+                self.assertEqual({str(p): p.read_bytes() for p in self.root.rglob("*.md")}, before)
+
+    def test_feedback_project_and_evidence_links_are_validated(self) -> None:
+        valid = {"scope": "parser", "evidence": ["Owner correction"]}
+        project = self.write("10-projects/Example.md", note_text("example", "repository", "Example", "Repository context."))
+        paths = ("../outside.md", "10-projects/Missing.md", "Home.md",
+                 "40-knowledge/concepts/Retrieval.md", "[[10-projects/Example]]",
+                 "./10-projects/Example.md", "10-projects/../10-projects/Example.md",
+                 str(project.resolve()), "10-projects/Example")
+        before = {str(p): p.read_bytes() for p in self.root.rglob("*.md")}
+        for index, path in enumerate(paths):
+            with self.subTest(path=path):
+                result = self.call("capture_note", {
+                    "title": f"Rejected path {index}", "content": "Correction",
+                    "feedback": {**valid, "project": path},
+                })
+                self.assertTrue(result["isError"], result)
+                self.assertEqual({str(p): p.read_bytes() for p in self.root.rglob("*.md")}, before)
+        result = self.call("capture_note", {
+            "title": "Rejected", "content": "Correction",
+            "feedback": {**valid, "evidence": ["[[Missing evidence]]"]},
+        })
+        self.assertTrue(result["isError"], result)
+        self.assertEqual(result["structuredContent"]["error"], "unresolved_capture_links")
+
+    def test_feedback_rejects_duplicate_capture_without_changing_existing_notes(self) -> None:
+        arguments = {"title": "One correction", "content": "Prefer explicit errors.",
+                     "feedback": {"scope": "parser", "evidence": ["Owner correction"]}}
+        first = self.call("capture_note", arguments)
+        self.assertFalse(first["isError"], first)
+        before = {str(p): p.read_bytes() for p in self.root.rglob("*.md")}
+        duplicate = self.call("capture_note", arguments)
+        self.assertTrue(duplicate["isError"], duplicate)
+        self.assertEqual({str(p): p.read_bytes() for p in self.root.rglob("*.md")}, before)
+
+    def test_feedback_rolls_back_note_when_moc_install_fails(self) -> None:
+        before = (self.root / "00-inbox/MOC - Inbox.md").read_bytes()
+        real_replace = mcp.os.replace
+        def fail_moc(source, destination):
+            if Path(destination).name == "MOC - Inbox.md":
+                raise OSError("simulated MOC install failure")
+            return real_replace(source, destination)
+        with mock.patch.object(mcp.os, "replace", side_effect=fail_moc):
+            result = self.call("capture_note", {
+                "title": "Failed feedback", "content": "Correction",
+                "feedback": {"scope": "parser", "evidence": ["Owner correction"]},
+            })
+        self.assertTrue(result["isError"], result)
+        self.assertFalse((self.root / "00-inbox/Failed feedback.md").exists())
+        self.assertEqual((self.root / "00-inbox/MOC - Inbox.md").read_bytes(), before)
+        self.assertFalse((self.root / "90-system/indexes/.mcp-write.lock").exists())
+
+    def test_feedback_capture_scans_existing_notes_once(self) -> None:
+        with mock.patch.object(mcp.vault, "scan_notes", wraps=mcp.vault.scan_notes) as scan:
+            result = self.call("capture_note", {
+                "title": "Single scan", "content": "Correction",
+                "feedback": {"scope": "parser", "evidence": ["Owner correction"]},
+            })
+        self.assertFalse(result["isError"], result)
+        self.assertEqual(scan.call_count, 1)
+
     def test_normal_capture_is_additive_visible_and_reviewable(self) -> None:
         result = self.call(
             "capture_note",

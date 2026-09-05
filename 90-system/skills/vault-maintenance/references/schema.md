@@ -6,7 +6,8 @@ Read this only when creating, moving, or validating notes.
 
 - `id`: stable lowercase kebab-case identifier; never reuse.
 - `type`: one of `moc`, `project`, `area`, `resource`, `source`, `raw-source`, `concept`,
-  `person`, `organization`, `journal`, `review`, `decision`, `note`, `redirect`, or `system`.
+  `person`, `organization`, `journal`, `review`, `decision`, `note`, `redirect`, `system`,
+  `repository`, `feature`, `bug`, `incident`, `experiment`, `devlog`, or `code-pattern`.
 - `status`: normally `draft`, `active`, `accepted`, `ready`, `superseded`, or `archived`.
 - `created` and `updated`: ISO `YYYY-MM-DD`.
 - `aliases` and `tags`: optional lists.
@@ -24,15 +25,18 @@ Each type has a home folder, and `check` reports notes that sit outside it:
 | Type | Folder |
 | --- | --- |
 | `project` | `10-projects` |
+| `repository`, `feature`, `bug`, `incident`, `experiment` | `10-projects` |
 | `area` | `20-areas` |
 | `resource` | `30-resources` |
 | `source` | `30-resources/sources` |
 | `raw-source` | `30-resources/sources/raw` |
 | `concept` | `40-knowledge/concepts` |
+| `code-pattern` | `40-knowledge/concepts` |
 | `person` | `40-knowledge/people` |
 | `organization` | `40-knowledge/organizations` |
 | `journal` | `50-journal/daily` |
 | `review` | `50-journal/weekly` |
+| `devlog` | `50-journal/dev` |
 | `decision` | `60-decisions` |
 | `system` | `90-system` |
 
@@ -49,6 +53,10 @@ becomes immutable when `vault.py source-seal` records its SHA-256 digest. Metada
 derived-note links outside the payload may still change. See [[90-system/Source Trust Policy]].
 
 ## Freshness
+
+Engineering patterns and review-pending feedback use the validated scope, confidence, and
+evidence fields defined in [[90-system/Engineering Memory]]. Development logs are dated
+records and are excluded from note merges, like daily and weekly journal entries.
 
 Use [[90-system/Freshness Policy]] only for facts whose currentness matters. An explicit
 snapshot needs `observed`; a pointer needs `truth_source` and `last_verified`, with an
