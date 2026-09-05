@@ -1,6 +1,6 @@
 ---
 name: vault-capture
-description: Capture a thought, link, quote, or fact into this Obsidian second brain without deciding its final home. Use when the user says capture, save this, note this down, add to inbox, or remember this for the vault. Not for editing an existing note or for reorganising the vault.
+description: Capture thoughts, sources, repository context, development-session outcomes, or explicit corrections into this Obsidian second brain. Use when the user asks to save, capture, remember, or preserve this material in the vault. Not for ordinary coding, explanations without requested persistence, editing existing notes, or reorganising the vault.
 ---
 
 # Vault Capture
@@ -10,6 +10,24 @@ do not expose that executable name.
 
 Capture is cheap; filing is expensive. Get the material in with enough context to be
 understood later, and stop there.
+
+## Search before capture
+
+Query the subject and scope first. Reuse a matching capture when it already contains the
+same evidence. If new evidence concerns an existing canonical note, link that note from
+the capture instead of inventing a second canonical subject.
+
+For requested repository onboarding, a development-session closeout, or durable feedback,
+read [[90-system/Engineering Memory]] for the applicable workflow and template. This skill
+does not trigger persistence merely because a coding task ends or the user corrects code.
+
+## Access from another project
+
+Use MCP `search_vault` before `capture_note`. The latter creates a review-pending Inbox
+draft; its optional `feedback` object stores scoped evidence in Properties. Use
+`capture_raw_source` for verbatim external text. Report the returned path and the need for
+review; MCP cannot file the note or edit existing canonical content. Finish with
+`vault_status` when available. The local CLI sequence below is for sessions in the vault.
 
 ## Decide the destination
 

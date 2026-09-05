@@ -1,6 +1,7 @@
 filters:
   and:
     - 'file.ext == "md"'
+    - 'type != "redirect"'
     - not:
         - file.inFolder("90-system/templates")
     - not:
@@ -14,6 +15,10 @@ properties:
     displayName: AI review
   updated:
     displayName: Updated
+  project:
+    displayName: Project
+  scope:
+    displayName: Scope
 views:
   - type: table
     name: "Review due"
@@ -46,4 +51,16 @@ views:
     order:
       - file.name
       - status
+      - created
+  - type: table
+    name: "Feedback"
+    filters:
+      and:
+        - file.inFolder("00-inbox")
+        - 'capture_kind == "feedback"'
+        - 'ai_review == "pending"'
+    order:
+      - file.name
+      - project
+      - scope
       - created

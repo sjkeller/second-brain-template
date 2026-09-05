@@ -3,7 +3,7 @@ id: ai-collaboration-policy
 type: system
 status: active
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-05
 tags:
   - system/agent
   - system/safety
@@ -69,8 +69,10 @@ view.
 
 ## Correction loop
 
-When the user corrects a recurring model behavior, update the relevant operating rule or a
-private evaluation case. Do not create a permanent log for every stylistic edit, and do not
+When the user asks to remember a recurring correction, capture its scope and evidence,
+then update the matching operating rule or private evaluation case after review. The
+[[90-system/Engineering Memory|Engineering Memory]] workflow defines structured feedback
+and pattern promotion. Do not create a permanent log for every stylistic edit, and do not
 store rejected AI prose as if it were knowledge.
 
 ## Research basis

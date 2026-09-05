@@ -36,6 +36,9 @@ Then work through it:
 - **Areas.** Which standards were neglected this week?
 - **Knowledge.** Promote durable lessons out of journal entries and projects into
   `40-knowledge`. This is the step that most often gets skipped.
+- **Engineering, when used.** Review scoped feedback and stale or conflicted patterns using
+  [[90-system/Engineering Memory]]. Consolidate into the existing subject, preserving
+  evidence and exceptions. Do not create a second style profile or copy session summaries.
 - **Health.** Work the `check` errors first, then warnings. Broken links and duplicate ids
   are real breakage; placement and staleness warnings are judgement calls.
 

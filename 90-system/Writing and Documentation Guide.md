@@ -3,7 +3,7 @@ id: writing-and-documentation-guide
 type: system
 status: active
 created: 2026-09-02
-updated: 2026-09-02
+updated: 2026-09-05
 tags:
   - system/writing
   - system/documentation
@@ -41,6 +41,13 @@ property with a distinct purpose.
 | Type | Put near the top | Supporting sections |
 | --- | --- | --- |
 | Project | `Current status`, `Outcome`, `Next actions` | `Waiting for`, `Constraints and risks`, `Evidence and decisions`, `Completion` |
+| Repository | `Current status`, `Identity and boundary` | `Architecture`, `Commands and verification`, `Conventions and evidence`, `Risks` |
+| Feature | `Current status`, `Outcome and non-goals` | `Behavior and acceptance`, `Interfaces`, `Verification evidence`, `Risks` |
+| Bug | `Current status`, `Reproduction` | `Evidence and hypotheses`, `Root cause and fix`, `Regression proof` |
+| Incident | `Current status`, `Timeline and evidence` | `Detection and containment`, `Contributing conditions`, `Follow-up` |
+| Experiment | `Result`, `Hypothesis` | `Method`, `Observations`, `Interpretation and next action` |
+| Dev log | `Outcome`, `Code state` | `Changes and discoveries`, `Verification evidence`, `Remaining work` |
+| Code pattern | `Rule`, `Prefer and why` | `Avoid and exceptions`, `Evidence interpretation`, `Verification` |
 | Area | `At a glance`, `Responsibility` | `Desired standard`, `Current attention`, `Review cadence`, `Active projects`, `Risks and open loops` |
 | Decision | `Decision` | `Context`, `Alternatives considered`, `Evidence`, `Consequences`, `Review trigger` |
 | Source | `Takeaway` | `Source identity`, `Evidence`, `Interpretation`, `Supports or challenges`, `Reliability and limitations` |

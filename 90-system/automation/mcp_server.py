@@ -14,11 +14,17 @@ import contextlib
 import importlib.util
 import io
 import json
+import math
 import os
+import queue
 import re
 import secrets
+import sqlite3
+import subprocess
 import sys
+import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -27,7 +33,7 @@ from urllib.parse import urlparse
 
 
 SERVER_NAME = "second-brain"
-SERVER_VERSION = "1.0.0"
+SERVER_VERSION = "1.1.1"
 MODERN_PROTOCOL = "2026-07-28"
 LEGACY_PROTOCOLS = (
     "2025-11-25",
@@ -36,6 +42,10 @@ LEGACY_PROTOCOLS = (
     "2024-11-05",
 )
 MAX_REQUEST_BYTES = 1_000_000
+MAX_RESPONSE_BYTES = 2_000_000
+MAX_JSON_DEPTH = 64
+MAX_PENDING_TOOLS = 8
+DEFAULT_READ_TIMEOUT_SECONDS = 30.0
 MAX_QUERY_CHARS = 500
 MAX_NOTE_CHARS = 50_000
 MAX_NOTE_FILE_BYTES = 2_000_000
@@ -222,13 +232,30 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Create one new AI-review draft in 00-inbox from user-provided or session-synthesized "
             "text and add its parent-MOC link. Never edits or replaces existing knowledge "
-            "content. Do not use for verbatim external material; use capture_raw_source instead."
+            "content. Optional feedback records scope and evidence for a correction awaiting "
+            "review. Search for an existing subject first. Do not use for verbatim external "
+            "material; use capture_raw_source instead."
         ),
         "inputSchema": object_schema(
             {
                 "title": {"type": "string", "minLength": 1, "maxLength": MAX_TITLE_CHARS},
                 "content": {"type": "string", "minLength": 1, "maxLength": MAX_NOTE_CHARS},
                 "tags": QUERY_PROPERTIES["tags"],
+                "feedback": object_schema(
+                    {
+                        "scope": {"type": "string", "minLength": 1, "maxLength": 300},
+                        "evidence": {
+                            "type": "array", "minItems": 1, "maxItems": 8,
+                            "uniqueItems": True,
+                            "items": {"type": "string", "minLength": 1, "maxLength": 1000},
+                        },
+                        "project": {
+                            "type": "string", "minLength": 1, "maxLength": 500,
+                            "description": "Optional exact vault-relative .md path to an existing project or repository note.",
+                        },
+                    },
+                    ["scope", "evidence"],
+                ),
             },
             ["title", "content"],
         ),
@@ -729,9 +756,33 @@ def write_new_note_and_moc(root: Path, draft: dict[str, Any], final_text: str, t
                     pass
 
 
+def feedback_metadata(arguments: dict[str, Any]) -> dict[str, Any]:
+    """Parse the narrow feedback extension; callers cannot set review or trust state."""
+    if "feedback" not in arguments:
+        return {}
+    feedback = require_object(arguments["feedback"], "feedback")
+    reject_unknown(feedback, {"scope", "evidence", "project"})
+    scope = string_value(feedback, "scope", required=True, minimum=1, maximum=300).strip()
+    if not scope or any(ord(character) < 32 for character in scope):
+        raise ToolInputError("invalid_argument", "scope must be nonblank single-line text", field="scope")
+    evidence = string_list(feedback, "evidence", maximum_items=8, maximum_chars=1000)
+    if not evidence:
+        raise ToolInputError("missing_argument", "feedback needs at least one evidence reference", field="evidence")
+    result: dict[str, Any] = {
+        "capture_kind": "feedback", "scope": scope, "evidence": evidence,
+        "confidence": "hypothesis",
+    }
+    if "project" in feedback:
+        project = string_value(feedback, "project", required=True, minimum=1, maximum=500)
+        if not project.strip() or any(ord(c) < 32 or c in "[]|#" for c in project):
+            raise ToolInputError("invalid_argument", "project must be an exact note path", field="project")
+        result["project"] = project
+    return result
+
+
 def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
     arguments = require_object(raw_arguments)
-    reject_unknown(arguments, {"title", "content", "tags"})
+    reject_unknown(arguments, {"title", "content", "tags", "feedback"})
     title = validate_title(arguments)
     content = string_value(
         arguments,
@@ -743,6 +794,7 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
     if not content:
         raise ToolInputError("invalid_argument", "content must not be blank", field="content")
     tags = validate_tags(arguments)
+    feedback = feedback_metadata(arguments)
 
     lock_path = root / "90-system" / "indexes" / ".mcp-write.lock"
     with VaultWriteLock(lock_path):
@@ -751,6 +803,19 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         note_id = str(metadata.get("id", "")).strip()
         existing_notes = vault.scan_notes(root)
         ensure_unique_identity(existing_notes, title, note_id)
+        if "project" in feedback:
+            resolved = vault.resolve_vault_path(root, feedback["project"])
+            exact_path = feedback["project"].replace("\\", "/")
+            project_note = next(
+                (note for note in existing_notes
+                 if resolved and note.path == resolved[1] == exact_path), None
+            )
+            if project_note is None or str(project_note.metadata.get("type", "")) not in {"project", "repository"}:
+                raise ToolInputError(
+                    "project_not_found", "project must identify an existing project or repository note",
+                    field="project",
+                )
+            feedback["project"] = f"[[{project_note.path.removesuffix('.md')}]]"
         body = (
             f"# {title}\n\n"
             "> [!warning] AI draft — not yet human-reviewed\n"
@@ -767,7 +832,7 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         final_text = vault.replace_note_body(draft["content"], body)
         moc_path = root / draft["moc"]
         final_text = vault.ensure_parent_moc_link(final_text, root, moc_path)
-        final_text = vault.set_frontmatter(final_text, {"ai_review": "pending"})
+        final_text = vault.set_frontmatter(final_text, {**feedback, "ai_review": "pending"})
         validate_candidate_note(root, draft["path"], final_text, existing_notes)
         write_new_note_and_moc(root, draft, final_text, title)
     return {
@@ -776,6 +841,7 @@ def capture_note(root: Path, raw_arguments: Any) -> dict[str, Any]:
         "type": "note",
         "status": "draft",
         "ai_review": "pending",
+        **feedback,
         "moc": draft["moc"],
         "next_action": "Review the visible AI draft, add evidence and links, then triage it from 00-inbox.",
     }
@@ -945,6 +1011,8 @@ class SecondBrainServer:
         if not isinstance(request, dict) or request.get("jsonrpc") != "2.0":
             return jsonrpc_error(None, -32600, "Invalid Request")
         request_id = request.get("id")
+        if "id" in request and (not isinstance(request_id, (str, int)) or isinstance(request_id, bool)):
+            return jsonrpc_error(None, -32600, "Invalid request id")
         method = request.get("method")
         if not isinstance(method, str):
             return jsonrpc_error(request_id, -32600, "Invalid Request")
@@ -1000,6 +1068,16 @@ class SecondBrainServer:
                     result = text_tool_result(payload)
                 except ToolInputError as error:
                     result = text_tool_result(error.payload(), is_error=True)
+                except sqlite3.Error as error:
+                    busy = getattr(error, "sqlite_errorcode", 0) & 0xFF in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED)
+                    result = text_tool_result({
+                        "error": "cache_busy" if busy else "cache_unavailable",
+                        "message": (
+                            "Another vault process is updating the retrieval cache; retry shortly."
+                            if busy else "Retrieval cache could not be used. Stop vault clients and inspect/rebuild the cache."
+                        ),
+                        "retryable": busy,
+                    }, is_error=True)
                 except (OSError, UnicodeError, RuntimeError) as error:
                     result = text_tool_result(
                         {
@@ -1047,31 +1125,258 @@ def validate_root(requested: str | None) -> Path:
 
 
 def write_response(response: dict[str, Any]) -> None:
-    sys.stdout.write(json.dumps(response, ensure_ascii=False, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    # Windows redirected stdout can default to cp1252. Protocol output is bytes,
+    # independent of that locale and of CLI helpers' redirect_stdout contexts.
+    encoded = json.dumps(response, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    if len(encoded) > MAX_RESPONSE_BYTES:
+        encoded = json.dumps(jsonrpc_error(response.get("id"), -32603,
+                             "Response exceeds the size limit; narrow the request")).encode("utf-8")
+    try:
+        sys.stdout.buffer.write(encoded + b"\n")
+        sys.stdout.buffer.flush()
+    except OSError as error:
+        # Windows also reports a closed redirected pipe as EINVAL, not EPIPE.
+        raise BrokenPipeError("MCP output pipe is unavailable") from error
 
 
-def serve(root: Path) -> int:
-    server = SecondBrainServer(root)
-    stream = sys.stdin.buffer
-    while True:
-        line = stream.readline(MAX_REQUEST_BYTES + 1)
-        if not line:
-            break
-        if len(line) > MAX_REQUEST_BYTES:
-            while line and not line.endswith(b"\n"):
-                line = stream.readline(MAX_REQUEST_BYTES + 1)
-            write_response(jsonrpc_error(None, -32700, "Request exceeds the size limit"))
-            continue
+def decode_message(line: bytes) -> Any:
+    def invalid_constant(value: str) -> None:
+        raise ValueError("non-finite JSON number")
+    value = json.loads(line.decode("utf-8"), parse_constant=invalid_constant)
+    stack = [(value, 0)]
+    while stack:
+        item, depth = stack.pop()
+        if depth > MAX_JSON_DEPTH:
+            raise ValueError("JSON nesting exceeds limit")
+        if isinstance(item, dict):
+            stack.extend((child, depth + 1) for child in item.values())
+            for key in item:
+                key.encode("utf-8")
+        elif isinstance(item, list):
+            stack.extend((child, depth + 1) for child in item)
+        elif isinstance(item, str):
+            item.encode("utf-8")  # Reject lone surrogates before they reach tools.
+        elif isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("JSON number exceeds finite range")
+    return value
+
+
+def read_messages(descriptor: int, events: queue.Queue) -> None:
+    buffered = bytearray()
+    oversized = False
+    try:
+        # Raw OS reads avoid holding Python's global stdin buffer lock in a daemon
+        # during shutdown after a broken output pipe. Each retained frame is bounded.
+        while chunk := os.read(descriptor, 65536):
+            segments = chunk.split(b"\n")
+            for index, segment in enumerate(segments):
+                complete = index < len(segments) - 1
+                if not oversized:
+                    buffered.extend(segment)
+                    if len(buffered) + int(complete) > MAX_REQUEST_BYTES:
+                        buffered.clear()
+                        oversized = True
+                        events.put(("error", jsonrpc_error(None, -32700, "Request exceeds the size limit")))
+                if complete:
+                    if not oversized:
+                        publish_message(bytes(buffered), events)
+                    buffered.clear()
+                    oversized = False
+        if buffered and not oversized:
+            publish_message(bytes(buffered), events)
+    except OSError:
+        pass  # A closed input pipe ends the session; it is not a tool failure.
+    finally:
+        events.put(("eof", None))
+
+
+def publish_message(line: bytes, events: queue.Queue) -> None:
+    try:
+        request = decode_message(line)
+    except (UnicodeError, ValueError, RecursionError):
+        events.put(("error", jsonrpc_error(None, -32700, "Invalid or over-nested JSON")))
+        return
+    events.put(("request", request))
+
+
+def tool_failure(request: dict[str, Any], code: str, message: str, retryable: bool) -> dict[str, Any]:
+    return {"jsonrpc": "2.0", "id": request["id"], "result": complete_result(
+        text_tool_result({"error": code, "message": message, "retryable": retryable}, is_error=True),
+        modern_request(request),
+    )}
+
+
+def diagnostic(event: str, job: "ToolJob") -> None:
+    # No arguments, request IDs, note paths, result text, or exception details.
+    record = {"event": event, "tool": job.request["params"]["name"],
+              "elapsed_ms": round((time.monotonic() - job.received) * 1000)}
+    try:
+        print("second-brain MCP: " + json.dumps(record), file=sys.stderr, flush=True)
+    except (OSError, ValueError):
+        pass  # An unavailable diagnostic sink must not close a usable MCP connection.
+
+
+class ToolJob:
+    """One isolated tool process. Only read jobs may be forcibly interrupted."""
+
+    def __init__(self, request: dict[str, Any]) -> None:
+        self.request = request
+        self.received = time.monotonic()
+        self.read_only = request["params"]["name"] not in {"capture_note", "capture_raw_source"}
+        self.cancelled = False
+        self.timed_out = False
+        self.process: subprocess.Popen | None = None
+        self.finished = threading.Event()
+        self.output = b""
+        self.returncode = -1
+
+    def start(self, root: Path) -> None:
+        self.process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--vault-root", str(root), "--_tool-worker"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+        )
+        threading.Thread(target=self._communicate, daemon=True).start()
+
+    def _communicate(self) -> None:
         try:
-            request = json.loads(line.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            write_response(jsonrpc_error(None, -32700, "Parse error"))
-            continue
-        response = server.handle(request)
-        if response is not None:
-            write_response(response)
+            # Keep stdin open for the read worker's parent-lifetime watchdog.
+            self.process.stdin.write(json.dumps(self.request).encode("utf-8") + b"\n")
+            self.process.stdin.flush()
+            self.output = self.process.stdout.read(MAX_RESPONSE_BYTES + 2)
+            if len(self.output) > MAX_RESPONSE_BYTES + 1:
+                self.stop_read()
+            self.returncode = self.process.wait()
+        except OSError:
+            self.stop_read()
+            self.process.wait()
+        finally:
+            for stream in (self.process.stdin, self.process.stdout):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+            self.finished.set()
+
+    def stop_read(self) -> None:
+        if self.read_only and self.process is not None and self.process.poll() is None:
+            try:
+                self.process.kill()
+            except ProcessLookupError:
+                pass
+
+    def response(self) -> dict[str, Any]:
+        if self.timed_out:
+            return tool_failure(self.request, "retrieval_timeout",
+                                "Read exceeded its deadline. Narrow the request or check local disk/cache availability; the MCP connection is still usable.", True)
+        try:
+            if self.returncode != 0 or len(self.output) > MAX_RESPONSE_BYTES + 1:
+                raise ValueError("failed worker")
+            response = decode_message(self.output)
+            if not isinstance(response, dict) or response.get("id") != self.request["id"]:
+                raise ValueError("invalid worker response")
+            if "result" not in response and "error" not in response:
+                raise ValueError("missing worker result")
+            return response
+        except (UnicodeError, ValueError, RecursionError):
+            # Never automatically replay a capture whose outcome may be uncertain.
+            return tool_failure(self.request, "tool_worker_failed",
+                                "Tool process failed. For a capture, check whether the note exists before retrying.", self.read_only)
+
+
+def serve(root: Path, read_timeout_seconds: float = DEFAULT_READ_TIMEOUT_SECONDS) -> int:
+    server = SecondBrainServer(root)
+    events: queue.Queue = queue.Queue(maxsize=MAX_PENDING_TOOLS * 2)
+    threading.Thread(target=read_messages, args=(sys.stdin.fileno(), events), daemon=True).start()
+    pending: deque[ToolJob] = deque()
+    active: ToolJob | None = None
+    eof = False
+    try:
+        while not eof or pending or active:
+            if active and active.finished.is_set():
+                if not active.cancelled:
+                    response = active.response()
+                    if "error" in response or response.get("result", {}).get("isError"):
+                        diagnostic("tool_error", active)
+                    elif time.monotonic() - active.received >= 5:
+                        diagnostic("slow_tool", active)
+                    write_response(response)
+                active = None
+            if active and active.read_only and not active.cancelled and not active.timed_out:
+                if time.monotonic() - active.received >= read_timeout_seconds:
+                    active.timed_out = True
+                    diagnostic("read_timeout", active)
+                    active.stop_read()
+            if active is None and pending:
+                active = pending.popleft()
+                if active.read_only and time.monotonic() - active.received >= read_timeout_seconds:
+                    active.timed_out = True
+                    active.finished.set()
+                else:
+                    try:
+                        active.start(root)
+                    except OSError:
+                        active.finished.set()
+            try:
+                event, request = events.get(timeout=0.02)
+            except queue.Empty:
+                continue
+            if event == "eof":
+                eof = True  # Drain admitted work; captures are never killed mid-transaction.
+            elif event == "error":
+                write_response(request)
+            elif (isinstance(request, dict) and request.get("jsonrpc") == "2.0"
+                  and request.get("method") == "notifications/cancelled" and "id" not in request):
+                params = request.get("params")
+                identity = params.get("requestId") if isinstance(params, dict) else None
+                if not isinstance(identity, (str, int)) or isinstance(identity, bool):
+                    continue
+                pending = deque(job for job in pending if job.request["id"] != identity)
+                if active and active.request["id"] == identity:
+                    active.cancelled = True
+                    diagnostic("cancelled_read" if active.read_only else "capture_finishing_after_cancel", active)
+                    active.stop_read()
+            elif (isinstance(request, dict) and request.get("jsonrpc") == "2.0"
+                  and request.get("method") == "tools/call"
+                  and isinstance(request.get("id"), (str, int)) and not isinstance(request["id"], bool)
+                  and isinstance(request.get("params"), dict)
+                  and isinstance(request["params"].get("name"), str)
+                  and request["params"]["name"] in TOOL_NAMES):
+                if any(job.request["id"] == request["id"] for job in [*pending, *([active] if active else [])]):
+                    write_response(jsonrpc_error(request["id"], -32600, "Duplicate in-flight request id"))
+                elif len(pending) + bool(active) >= MAX_PENDING_TOOLS:
+                    write_response(tool_failure(request, "server_busy", "Too many pending tools; retry after earlier calls finish.", True))
+                else:
+                    pending.append(ToolJob(request))
+            else:
+                response = server.handle(request)
+                if response is not None:
+                    write_response(response)
+    except (BrokenPipeError, ConnectionResetError):
+        # Do not re-flush a broken stdout buffer during interpreter shutdown (exit 120).
+        with open(os.devnull, "wb") as sink:
+            os.dup2(sink.fileno(), sys.stdout.fileno())
+    finally:
+        if active and active.process:
+            active.stop_read()
+            active.finished.wait()  # An admitted capture must finish its guarded transaction.
     return 0
+
+
+def positive_timeout(value: str) -> float:
+    timeout = float(value)
+    if not 0 < timeout <= 300:
+        raise argparse.ArgumentTypeError("read timeout must be greater than 0 and at most 300 seconds")
+    return timeout
+
+
+def watch_read_parent() -> None:
+    """A forcibly closed client must not leave a stuck read holding SQLite locks."""
+    try:
+        os.read(sys.stdin.fileno(), 1)
+    except OSError:
+        pass
+    os._exit(0)  # Read workers change no notes; SQLite recovers their cache transaction.
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1080,13 +1385,35 @@ def main(argv: list[str] | None = None) -> int:
         "--vault-root",
         help="Vault root. Defaults to the repository containing this script.",
     )
+    parser.add_argument("--read-timeout-seconds", type=positive_timeout, default=DEFAULT_READ_TIMEOUT_SECONDS,
+                        help="Deadline for a read tool including queue time (default: 30; max: 300). Does not interrupt captures.")
+    parser.add_argument("--_tool-worker", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         root = validate_root(args.vault_root)
     except (OSError, ValueError) as error:
         print(f"second-brain MCP configuration error: {error}", file=sys.stderr)
         return 2
-    return serve(root)
+    if args._tool_worker:
+        try:
+            line = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 1)
+            if not line or len(line) > MAX_REQUEST_BYTES:
+                return 2
+            request = decode_message(line)
+            if not isinstance(request, dict) or request.get("method") != "tools/call":
+                return 2
+            params = request.get("params")
+            if isinstance(params, dict) and params.get("name") in (
+                "search_vault", "build_context_pack", "related_notes", "read_note", "vault_status"
+            ):
+                threading.Thread(target=watch_read_parent, daemon=True).start()
+            response = SecondBrainServer(root).handle(request)
+            if response is not None:
+                write_response(response)
+        except (UnicodeError, ValueError, RecursionError, BrokenPipeError):
+            return 2
+        return 0
+    return serve(root, args.read_timeout_seconds)
 
 
 if __name__ == "__main__":

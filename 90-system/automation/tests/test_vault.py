@@ -273,6 +273,104 @@ class VaultFixture(unittest.TestCase):
         return path
 
 
+class EngineeringMemoryTests(VaultFixture):
+    def setUp(self):
+        super().setUp()
+        self.write("Home.md", note_text("home", "moc", "Home",
+                   "[[40-knowledge/concepts/MOC - Concepts]]\n[[90-system/templates/Note Template]]"))
+
+    def check(self):
+        return run(vault.command_check, self.root, True, True, False,
+                   vault.DEFAULT_STALE_DAYS, vault.DEFAULT_MAX_TAGS)
+
+    def test_engineering_templates_create_unique_linked_retrievable_drafts(self):
+        source_root = SCRIPT.parents[2]
+        for relative, identity, title in (
+            ("10-projects/MOC - Projects.md", "moc-projects", "Projects"),
+            ("50-journal/dev/MOC - Dev Sessions.md", "moc-dev", "Dev Sessions"),
+        ):
+            self.write(relative, note_text(identity, "moc", title, "<!-- vault:links -->\n[[Home]]"))
+        self.write("90-system/Engineering Memory.md", note_text("engineering", "system", "Engineering Memory", "[[Home]]"))
+        for note_type in ("repository", "feature", "bug", "incident", "experiment", "devlog", "code-pattern"):
+            with self.subTest(note_type=note_type):
+                template = vault.TYPE_TEMPLATES[note_type]
+                self.write("90-system/templates/" + template,
+                           (source_root / "90-system/templates" / template).read_text(encoding="utf-8"))
+                title = f"Engineering {note_type} example"
+                args = (self.root, note_type, title, None, [], None, True, False, True)
+                code, payload = run(vault.command_new, *args)
+                self.assertEqual(code, 0, payload)
+                path = self.root / payload["path"]
+                self.assertTrue(payload["path"].startswith(vault.TYPE_FOLDERS[note_type] + "/"))
+                self.assertTrue(payload["moc_updated"])
+                text = path.read_text(encoding="utf-8")
+                metadata, _ = vault.parse_frontmatter(text)
+                self.assertEqual(metadata["type"], note_type)
+                self.assertEqual(metadata["status"], "draft")
+                self.assertNotIn("{{", text)
+                readability = vault.readability_findings(vault.read_note(self.root, path), 1, 120, 120)
+                self.assertFalse(any(readability.values()), readability)
+                self.assertEqual(run(vault.command_new, *args)[1]["error"], "already_exists")
+                self.assertEqual(path.read_text(encoding="utf-8"), text)
+                cache = vault.open_cache(self.root)
+                try:
+                    ranked = vault.rank(cache, title, vault.QueryOptions(types=(note_type,)))
+                finally:
+                    cache.close()
+                self.assertEqual([note.path for _, note in ranked], [payload["path"]])
+        code, findings = self.check()
+        self.assertEqual(code, 0, findings)
+        self.assertEqual(findings["summary"]["warnings"], 0)
+
+    def test_pattern_promotion_requires_scope_evidence_state_and_verification(self):
+        relative = "40-knowledge/concepts/Explicit errors.md"
+        body = "[[40-knowledge/concepts/MOC - Concepts]]"
+        self.write(relative, note_text("explicit-errors", "code-pattern", "Explicit errors", body, status="draft"))
+        self.assertEqual(self.check()[0], 0)
+        self.write(relative, note_text("explicit-errors", "code-pattern", "Explicit errors", body))
+        code, payload = self.check()
+        self.assertEqual(code, 1)
+        missing = {key for finding in payload["warnings"]["metadata_issues"] for key in finding.get("missing", [])}
+        self.assertEqual(missing, {"scope", "confidence", "evidence", "last_verified"})
+        self.write(relative, note_text("explicit-errors", "code-pattern", "Explicit errors", body,
+                   extra=f'scope: parser boundary\nconfidence: observed\nevidence: ["src/parser.py at abc123"]\nlast_verified: {TODAY}\n'))
+        self.assertEqual(self.check()[0], 0)
+
+    def test_invalid_pattern_metadata_is_reported_without_crashing(self):
+        for extra in (
+            'scope: [parser]\nconfidence: [confirmed]\nevidence: source\nlast_verified: invalid\n',
+            'scope: parser\nconfidence: certain\nevidence: [""]\n',
+        ):
+            with self.subTest(extra=extra):
+                self.write("40-knowledge/concepts/Invalid pattern.md", note_text(
+                    "invalid-pattern", "code-pattern", "Invalid pattern",
+                    "[[40-knowledge/concepts/MOC - Concepts]]", extra=extra,
+                ))
+                code, payload = self.check()
+                self.assertEqual(code, 1)
+                self.assertTrue(payload["warnings"]["metadata_issues"])
+
+    def test_feedback_metadata_is_checked_even_in_draft_inbox(self):
+        self.write("00-inbox/Feedback.md", note_text(
+            "feedback", "note", "Feedback", "[[00-inbox/MOC - Inbox]]",
+            status="draft", extra="capture_kind: feedback\n",
+        ))
+        code, payload = self.check()
+        self.assertEqual(code, 1)
+        missing = {key for finding in payload["warnings"]["metadata_issues"] for key in finding.get("missing", [])}
+        self.assertEqual(missing, {"scope", "confidence", "evidence"})
+
+    def test_devlog_cannot_be_merged_even_when_it_is_still_in_inbox(self):
+        self.write("00-inbox/Session.md", note_text("session", "devlog", "Session", "[[Home]]"))
+        self.write("90-system/indexes/.merge-drafts/session.md", "# Retrieval\n\n[[Home]]\n")
+        code, payload = run(vault.command_merge, self.root,
+                            "40-knowledge/concepts/Retrieval.md", "00-inbox/Session.md",
+                            "90-system/indexes/.merge-drafts/session.md", False, None, False, True)
+        self.assertEqual(code, 2)
+        self.assertEqual(payload["error"], "note_not_mergeable")
+        self.assertTrue((self.root / "00-inbox/Session.md").exists())
+
+
 class CacheTests(VaultFixture):
     def test_sync_is_incremental(self):
         cache = vault.VaultCache(self.root, self.root / "cache.sqlite3")
@@ -847,6 +945,12 @@ class CheckTests(VaultFixture):
         cache = vault.open_cache(self.root)
 
         class RaceCache:
+            def __enter__(inner_self):
+                return inner_self
+
+            def __exit__(inner_self, *args):
+                inner_self.close()
+
             def notes(inner_self):
                 notes = cache.notes()
                 path.unlink()

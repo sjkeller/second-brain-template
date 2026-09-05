@@ -1,6 +1,6 @@
 ---
 name: vault-capture
-description: Capture a thought, link, quote, or fact into this Obsidian second brain without deciding its final home. Use when the user says capture, save this, note this down, add to inbox, or remember this for the vault. Not for editing an existing note or for reorganising the vault.
+description: Capture thoughts, sources, repository context, development-session outcomes, or explicit corrections into this Obsidian second brain. Use when the user asks to save, capture, remember, or preserve this material in the vault. Not for ordinary coding, explanations without requested persistence, editing existing notes, or reorganising the vault.
 argument-hint: [what to capture]
 ---
 

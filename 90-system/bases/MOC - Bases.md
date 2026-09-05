@@ -3,7 +3,7 @@ id: moc-bases
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-02
+updated: 2026-09-05
 tags:
   - system/moc
   - system/bases
@@ -23,6 +23,11 @@ opening a file instead of by asking a model.
 - `Triage.base` — Inbox captures and drafts anywhere in the vault.
 - `Review.base` — due reviews, unreviewed AI drafts, and raw sources awaiting sealing.
 - `Context.base` — notes that link to the note in which this Base is embedded.
+
+Optional engineering views reuse these files: `Active Work.base#Investigations`,
+`Knowledge.base#Patterns`, and `Review.base#Feedback`. Home keeps its existing views so
+engineering records are not shown in a second overlapping dashboard. Feedback selects only
+review-pending Inbox notes with `capture_kind: feedback`; ordinary captures stay in triage.
 
 Open them from the file explorer. They are YAML, not Markdown, so they do not appear in
 the graph and are not indexed by [[90-system/automation/MOC - Automation|Automation]].
@@ -55,6 +60,8 @@ note, so the view becomes a contextual reverse lookup without the performance-he
 dashboard.
 
 ## Compatibility
+
+Syntax reference: https://help.obsidian.md/bases/syntax
 
 These files use documented Bases constructs: recursive filters, `file.inFolder()`,
 `file.hasLink()`, `today()`, property comparison, `groupBy`, property display names, and

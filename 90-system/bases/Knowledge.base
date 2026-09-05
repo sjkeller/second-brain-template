@@ -7,6 +7,12 @@ properties:
     displayName: Status
   updated:
     displayName: Updated
+  scope:
+    displayName: Scope
+  confidence:
+    displayName: Evidence state
+  last_verified:
+    displayName: Last verified
 views:
   - type: table
     name: "Concepts"
@@ -36,3 +42,14 @@ views:
       - file.name
       - type
       - updated
+  - type: table
+    name: "Patterns"
+    filters:
+      and:
+        - 'type == "code-pattern"'
+    order:
+      - file.name
+      - scope
+      - confidence
+      - status
+      - last_verified
