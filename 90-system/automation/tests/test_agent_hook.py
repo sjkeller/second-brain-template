@@ -74,6 +74,39 @@ def codex_lines(turns: int, patches: int) -> list[str]:
     return lines
 
 
+def capture_line(call_id: str = "cap-1") -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": "mcp__second-brain__capture_note",
+                        "input": {"title": "A draft", "content": "body"},
+                    }
+                ],
+            },
+        }
+    )
+
+
+def failed_result_line(call_id: str = "cap-1") -> str:
+    return json.dumps(
+        {
+            "type": "user",
+            "message": {
+                "role": "user",
+                "content": [
+                    {"type": "tool_result", "tool_use_id": call_id, "is_error": True, "content": "nope"}
+                ],
+            },
+        }
+    )
+
+
 class HookFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -151,11 +184,10 @@ class DueRuleTest(HookFixture):
         super().setUp()
         self.settings = hook.DEFAULTS["harvest"]
 
-    def activity(self, turns: int, files: int, captures: int = 0) -> hook.Activity:
+    def activity(self, turns: int, files: int) -> hook.Activity:
         activity = hook.Activity()
         activity.assistant_turns = turns
-        activity.edited_paths = {f"file{index}.c" for index in range(files)}
-        activity.captures = captures
+        activity.edits = files
         return activity
 
     def test_below_both_thresholds_is_not_due(self) -> None:
@@ -167,8 +199,10 @@ class DueRuleTest(HookFixture):
     def test_edit_threshold_alone_is_due(self) -> None:
         self.assertTrue(hook.is_due(self.activity(0, 5), {}, self.settings, False))
 
-    def test_a_capture_since_the_watermark_clears_the_debt(self) -> None:
-        self.assertFalse(hook.is_due(self.activity(30, 9, captures=1), {}, self.settings, False))
+    def test_the_due_rule_no_longer_vetoes_on_captures(self) -> None:
+        activity = self.activity(30, 9)
+        activity.captures = 1
+        self.assertTrue(hook.is_due(activity, {}, self.settings, False))
 
     def test_precompact_uses_the_lower_thresholds(self) -> None:
         self.assertFalse(hook.is_due(self.activity(6, 0), {}, self.settings, False))
@@ -198,6 +232,62 @@ class RecallGateTest(HookFixture):
     def test_acknowledgement_is_skipped(self) -> None:
         padded = "Go ahead" + " " * 40
         self.assertFalse(hook.worth_recalling(padded, self.settings))
+
+
+class CaptureWindowTest(HookFixture):
+    """A capture ends one activity window and opens the next; it is not a permanent veto."""
+
+    def test_work_before_a_capture_is_not_counted(self) -> None:
+        self.write_transcript(claude_lines(20, ["a.c", "b.c"]) + [capture_line()])
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 0)
+        self.assertEqual(activity.edits, 0)
+        self.assertIsNotNone(activity.capture_offset)
+
+    def test_work_after_a_capture_is_counted(self) -> None:
+        self.write_transcript(
+            claude_lines(20, ["a.c"]) + [capture_line()] + claude_lines(7, ["c.c", "d.c"])
+        )
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 7)
+        self.assertEqual(activity.edits, 2)
+
+    def test_enough_work_after_a_capture_becomes_due_again(self) -> None:
+        self.write_transcript(claude_lines(5, []) + [capture_line()] + claude_lines(30, []))
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertTrue(hook.is_due(activity, {}, hook.DEFAULTS["harvest"], False))
+
+    def test_a_failed_capture_does_not_end_the_window(self) -> None:
+        self.write_transcript(
+            claude_lines(20, []) + [capture_line("cap-x"), failed_result_line("cap-x")]
+        )
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 21)
+        self.assertIsNone(activity.capture_offset)
+        self.assertTrue(hook.is_due(activity, {}, hook.DEFAULTS["harvest"], False))
+
+    def test_the_last_successful_capture_wins(self) -> None:
+        self.write_transcript(
+            claude_lines(3, [])
+            + [capture_line("cap-1")]
+            + claude_lines(4, [])
+            + [capture_line("cap-2")]
+            + claude_lines(2, [])
+        )
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 2)
+
+    def test_dispatch_persists_the_post_capture_watermark(self) -> None:
+        self.write_transcript(claude_lines(20, []) + [capture_line()])
+        code, payload = self.dispatch(self.payload("Stop"))
+        self.assertEqual(code, 0)
+        self.assertIsNone(payload)
+        offset = self.ledger()["sessions"]["session-1"]["offset"]
+        self.assertGreater(offset, 0)
+
+        self.write_transcript(claude_lines(20, []) + [capture_line()] + claude_lines(30, []))
+        activity, _ = hook.scan_transcript(str(self.transcript), offset)
+        self.assertEqual(activity.assistant_turns, 30)
 
 
 class PromptContractTest(HookFixture):

@@ -50,6 +50,7 @@ TOOL_NODE_TYPES = {
     "local_shell_call",
 }
 PATH_KEYS = ("file_path", "filePath", "path", "notebook_path")
+RESULT_ID_KEYS = ("tool_use_id", "tool_call_id", "call_id")
 
 # UserPromptSubmit carries a `source`; only a person's own prompt deserves a context pack.
 AUTOMATED_PROMPT_SOURCES = {"system", "loop_wakeup", "schedule_wakeup", "poll_event"}
@@ -207,28 +208,36 @@ def tool_arguments(node: dict) -> dict:
 
 
 class Activity:
-    """Counts of the session activity that stands in for accumulated knowledge."""
+    """Session activity since the watermark, measured from the last successful capture.
+
+    A capture ends one window and opens the next. Counting it as a permanent veto instead
+    would suppress every later harvest, because the watermark only ever advances when a
+    harvest is signalled.
+    """
 
     def __init__(self) -> None:
         self.assistant_turns = 0
-        self.edited_paths: set[str] = set()
-        self.patch_calls = 0
+        self.edits = 0
         self.captures = 0
+        self.capture_offset: int | None = None
         self.lines = 0
         self.recognised = 0
+        self.raw_turns = 0
+        self.edit_events: list[str] = []
+        self.capture_marks: list[tuple[str, int, int, int]] = []
+        self.line_captures: list[str] = []
+        self.error_call_ids: set[str] = set()
 
-    @property
-    def edits(self) -> int:
-        return len(self.edited_paths) + self.patch_calls
-
-    def absorb_line(self, payload: Any) -> None:
+    def absorb_line(self, payload: Any, position: int) -> None:
         self.lines += 1
+        self.line_captures = []
         seen_assistant = False
 
         def visit(node: dict) -> None:
             nonlocal seen_assistant
             if node.get("role") == "assistant" or node.get("type") == "assistant":
                 seen_assistant = True
+            self.absorb_result(node)
             name = node.get("name")
             if not isinstance(name, str):
                 return
@@ -242,14 +251,48 @@ class Activity:
 
         walk_dicts(payload, visit)
         if seen_assistant:
-            self.assistant_turns += 1
+            self.raw_turns += 1
             self.recognised += 1
+        # Mark after the line is fully counted, so the capture's own turn closes the old
+        # window rather than opening the new one.
+        for call_id in self.line_captures:
+            self.capture_marks.append((call_id, position, self.raw_turns, len(self.edit_events)))
+
+    def absorb_result(self, node: dict) -> None:
+        """Remember failed tool results, so a failed capture does not end a window."""
+        if node.get("is_error") is not True and node.get("success") is not False:
+            return
+        for key in RESULT_ID_KEYS:
+            value = node.get(key)
+            if isinstance(value, str) and value.strip():
+                self.error_call_ids.add(value.strip())
+                return
+
+    def finalise(self) -> None:
+        """Reduce the raw counts to the window that follows the last successful capture."""
+        turns_before, edits_before = 0, 0
+        for call_id, offset, turns, edits in reversed(self.capture_marks):
+            if call_id and call_id in self.error_call_ids:
+                continue
+            turns_before, edits_before = turns, edits
+            self.capture_offset = offset
+            break
+        self.assistant_turns = self.raw_turns - turns_before
+        window = self.edit_events[edits_before:]
+        self.edits = len({path for path in window if path}) + sum(1 for path in window if not path)
 
     def absorb_tool(self, name: str, node: dict) -> None:
         lowered = name.lower()
         if "capture_note" in lowered:
             self.captures += 1
             self.recognised += 1
+            call_id = ""
+            for key in ("id", *RESULT_ID_KEYS):
+                value = node.get(key)
+                if isinstance(value, str) and value.strip():
+                    call_id = value.strip()
+                    break
+            self.line_captures.append(call_id)
             return
         arguments = tool_arguments(node)
         raw = arguments.get("_raw")
@@ -269,9 +312,9 @@ class Activity:
         for key in PATH_KEYS:
             value = arguments.get(key)
             if isinstance(value, str) and value.strip():
-                self.edited_paths.add(value.strip())
+                self.edit_events.append(value.strip())
                 return
-        self.patch_calls += 1
+        self.edit_events.append("")
 
 
 def scan_transcript(path_value: object, offset: int) -> tuple[Activity, int]:
@@ -284,25 +327,32 @@ def scan_transcript(path_value: object, offset: int) -> tuple[Activity, int]:
         size = path.stat().st_size
     except (OSError, RuntimeError, ValueError):
         return activity, offset
-    start = 0 if offset > size else max(offset, 0)
+    start = offset if 0 <= offset <= size else 0
     if size - start > MAX_SCAN_BYTES:
         start = size - MAX_SCAN_BYTES
     try:
         with path.open("r", encoding="utf-8", errors="replace") as handle:
             handle.seek(start)
-            for line in handle:
+            # readline rather than iteration: a text handle refuses tell() while iterating,
+            # and a capture's end position is what opens the next activity window.
+            while True:
+                line = handle.readline()
+                if not line:
+                    break
+                position = handle.tell()
                 stripped = line.strip()
                 if not stripped:
                     continue
                 try:
-                    activity.absorb_line(json.loads(stripped))
+                    activity.absorb_line(json.loads(stripped), position)
                 except ValueError:
                     activity.lines += 1
     except OSError:
         return activity, offset
     if activity.recognised == 0 and activity.lines:
         # An unrecognised transcript shape still says how much traffic went by.
-        activity.assistant_turns = activity.lines // 4
+        activity.raw_turns = activity.lines // 4
+    activity.finalise()
     return activity, size
 
 
@@ -420,8 +470,6 @@ def is_due(
     settings: dict[str, Any],
     precompact: bool,
 ) -> bool:
-    if activity.captures:
-        return False
     turns = int(settings["precompact_assistant_turns" if precompact else "assistant_turns"])
     edits = int(settings["precompact_edits" if precompact else "edits"])
     if activity.assistant_turns < turns and activity.edits < edits:
@@ -485,6 +533,9 @@ def dispatch(root: Path, payload: dict[str, Any]) -> int:
 
     stamp = utc_now().isoformat(timespec="seconds")
     entry.update({"cwd": payload.get("cwd"), "updated_at": stamp})
+    if activity.capture_offset is not None:
+        # Work before a successful capture is accounted for; never rescan it.
+        entry["offset"] = max(int(entry.get("offset", 0) or 0), activity.capture_offset)
     if event == "SessionStart" or harvestable:
         # Advance the watermark before signalling, so a harvest cannot re-fire on itself.
         entry["offset"] = position
