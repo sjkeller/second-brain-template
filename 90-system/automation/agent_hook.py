@@ -20,18 +20,23 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import hashlib
 import importlib.util
 import io
 import json
 import os
+import re
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 
 CONFIG_RELATIVE = "agent_hook_config.json"
-LEDGER_RELATIVE = Path("90-system/indexes/harvest-state.json")
+STATE_RELATIVE = Path("90-system/indexes/.harvest-state")
+UNSAFE_ID_CHARS = re.compile(r"[^A-Za-z0-9._-]")
+MAX_ID_CHARS = 64
 SKILL_NAME = "second-brain-harvest"
 MAX_QUERY_CHARS = 500
 MAX_SCAN_BYTES = 8_000_000
@@ -81,7 +86,7 @@ DEFAULTS: dict[str, Any] = {
         "cooldown_seconds": 600,
         "max_notes": 3,
     },
-    "ledger": {"max_sessions": 200},
+    "ledger": {"retention_days": 30},
 }
 
 
@@ -153,31 +158,52 @@ def parse_timestamp(value: object) -> datetime | None:
         return None
 
 
-def read_ledger(path: Path) -> dict[str, Any]:
+def state_file(root: Path, session_id: object) -> Path:
+    """One state file per session.
+
+    A single shared ledger would be read-modify-written whole by every session, so two
+    concurrent sessions would silently drop each other's watermarks. Writing only your own
+    file makes a lost update impossible without a cross-process lock.
+    """
+    raw = session_id.strip() if isinstance(session_id, str) and session_id.strip() else "unknown-session"
+    safe = UNSAFE_ID_CHARS.sub("-", raw)[:MAX_ID_CHARS]
+    digest = hashlib.sha256(raw.encode("utf-8")).hexdigest()[:8]
+    return root / STATE_RELATIVE / f"{safe}-{digest}.json"
+
+
+def read_state(path: Path) -> dict[str, Any]:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"version": 1, "sessions": {}}
-    sessions = payload.get("sessions") if isinstance(payload, dict) else None
-    if not isinstance(sessions, dict):
-        return {"version": 1, "sessions": {}}
-    return {"version": 1, "sessions": sessions}
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
-def write_ledger(path: Path, ledger: dict[str, Any], max_sessions: int) -> None:
-    sessions: dict[str, Any] = ledger.get("sessions", {})
-    if len(sessions) > max_sessions:
-        ordered = sorted(
-            sessions.items(),
-            key=lambda item: str(item[1].get("updated_at", "")),
-            reverse=True,
-        )
-        sessions = dict(ordered[:max_sessions])
-    body = json.dumps({"version": 1, "sessions": sessions}, ensure_ascii=False, indent=1)
-    path.parent.mkdir(parents=True, exist_ok=True)
+def write_state(path: Path, entry: dict[str, Any]) -> bool:
+    """Replace one session's state atomically. Returns whether it reached disk."""
+    body = json.dumps(entry, ensure_ascii=True, indent=1)
     temporary = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-    temporary.write_text(body + "\n", encoding="utf-8")
-    os.replace(temporary, path)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(body + "\n", encoding="utf-8")
+        os.replace(temporary, path)
+    except OSError:
+        with contextlib.suppress(OSError):
+            temporary.unlink()
+        return False
+    return True
+
+
+def prune_state(directory: Path, retention_days: int) -> None:
+    cutoff = time.time() - max(retention_days, 1) * 86400
+    try:
+        candidates = list(directory.iterdir())
+    except OSError:
+        return
+    for candidate in candidates:
+        with contextlib.suppress(OSError):
+            if candidate.is_file() and candidate.stat().st_mtime < cutoff:
+                candidate.unlink()
 
 
 def walk_dicts(node: Any, visit: Callable[[dict], None], depth: int = 0) -> None:
@@ -448,15 +474,6 @@ def emit(event: str, additional_context: str = "", system_message: str = "") -> 
     sys.stdout.buffer.flush()
 
 
-def entry_for(ledger: dict[str, Any], session_id: object) -> tuple[str, dict[str, Any]]:
-    key = session_id if isinstance(session_id, str) and session_id.strip() else "unknown-session"
-    entry = ledger["sessions"].get(key)
-    if not isinstance(entry, dict):
-        entry = {"offset": 0, "signals": 0}
-        ledger["sessions"][key] = entry
-    return key, entry
-
-
 def cooldown_passed(entry: dict[str, Any], cooldown_seconds: int) -> bool:
     last = parse_timestamp(entry.get("last_signal_at"))
     if last is None:
@@ -513,9 +530,10 @@ def dispatch(root: Path, payload: dict[str, Any]) -> int:
     harvest_settings = config["harvest"]
     in_vault = inside_vault(root, payload.get("cwd"))
 
-    ledger_path = root / LEDGER_RELATIVE
-    ledger = read_ledger(ledger_path)
-    key, entry = entry_for(ledger, payload.get("session_id"))
+    path = state_file(root, payload.get("session_id"))
+    entry = read_state(path)
+    if event == "SessionStart":
+        prune_state(path.parent, int(config["ledger"]["retention_days"]))
     activity, position = scan_transcript(
         payload.get("transcript_path"), int(entry.get("offset", 0) or 0)
     )
@@ -542,9 +560,7 @@ def dispatch(root: Path, payload: dict[str, Any]) -> int:
     if harvestable:
         entry["last_signal_at"] = stamp
         entry["signals"] = int(entry.get("signals", 0) or 0) + 1
-    ledger["sessions"][key] = entry
-    with contextlib.suppress(OSError):
-        write_ledger(ledger_path, ledger, int(config["ledger"]["max_sessions"]))
+    write_state(path, entry)
 
     directive = harvest_directive(activity, int(harvest_settings["max_notes"])) if harvestable else ""
     if directive and event == "Stop" and os.environ.get("CLAUDE_PROJECT_DIR"):

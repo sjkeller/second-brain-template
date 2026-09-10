@@ -19,6 +19,6 @@
     "max_notes": 3
   },
   "ledger": {
-    "max_sessions": 200
+    "retention_days": 30
   }
 }

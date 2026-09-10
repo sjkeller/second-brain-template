@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -145,8 +146,8 @@ class HookFixture(unittest.TestCase):
                 code = hook.dispatch(self.root, payload)
         return code, stream.getvalue()
 
-    def ledger(self) -> dict:
-        return hook.read_ledger(self.root / hook.LEDGER_RELATIVE)
+    def state(self, session_id: str = "session-1") -> dict:
+        return hook.read_state(hook.state_file(self.root, session_id))
 
 
 class TranscriptScanTest(HookFixture):
@@ -282,7 +283,7 @@ class CaptureWindowTest(HookFixture):
         code, payload = self.dispatch(self.payload("Stop"))
         self.assertEqual(code, 0)
         self.assertIsNone(payload)
-        offset = self.ledger()["sessions"]["session-1"]["offset"]
+        offset = self.state()["offset"]
         self.assertGreater(offset, 0)
 
         self.write_transcript(claude_lines(20, []) + [capture_line()] + claude_lines(30, []))
@@ -354,7 +355,7 @@ class DispatchTest(HookFixture):
         self.assertEqual(first, 2)
         self.assertIn("SECOND BRAIN HARVEST DUE", stderr.getvalue())
 
-        entry = self.ledger()["sessions"]["session-1"]
+        entry = self.state()
         self.assertEqual(entry["offset"], self.transcript.stat().st_size)
         self.assertEqual(entry["signals"], 1)
 
@@ -391,7 +392,7 @@ class DispatchTest(HookFixture):
         self.write_transcript(claude_lines(30, []))
         code, _ = self.dispatch(self.payload("SessionStart", started_by="startup"))
         self.assertEqual(code, 0)
-        entry = self.ledger()["sessions"]["session-1"]
+        entry = self.state()
         self.assertEqual(entry["offset"], self.transcript.stat().st_size)
         self.assertEqual(entry.get("signals", 0), 0)
 
@@ -419,32 +420,75 @@ class ResilienceTest(HookFixture):
     def test_a_missing_argument_exits_successfully(self) -> None:
         self.assertEqual(hook.main([]), 0)
 
-    def test_corrupt_ledger_is_replaced_rather_than_fatal(self) -> None:
-        path = self.root / hook.LEDGER_RELATIVE
+    def test_corrupt_state_is_replaced_rather_than_fatal(self) -> None:
+        path = hook.state_file(self.root, "session-1")
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("{ broken", encoding="utf-8")
-        self.assertEqual(hook.read_ledger(path)["sessions"], {})
+        self.assertEqual(hook.read_state(path), {})
 
     def test_config_falls_back_to_defaults_when_unreadable(self) -> None:
         with mock.patch.object(hook.Path, "read_text", side_effect=OSError):
             self.assertEqual(hook.load_config()["harvest"]["assistant_turns"], 12)
 
 
-class LedgerTest(HookFixture):
-    def test_pruning_keeps_the_most_recent_sessions(self) -> None:
-        path = self.root / hook.LEDGER_RELATIVE
-        sessions = {
-            f"s{index}": {"offset": index, "updated_at": f"2026-09-{index + 1:02d}T00:00:00+00:00"}
-            for index in range(5)
-        }
-        hook.write_ledger(path, {"sessions": sessions}, 3)
-        kept = hook.read_ledger(path)["sessions"]
-        self.assertEqual(sorted(kept), ["s2", "s3", "s4"])
+class StateFileTest(HookFixture):
+    """Per-session files, so concurrent sessions cannot lose each other's watermarks."""
+
+    def test_two_sessions_do_not_clobber_each_other(self) -> None:
+        first = hook.state_file(self.root, "alpha")
+        second = hook.state_file(self.root, "beta")
+        self.assertNotEqual(first, second)
+        self.assertTrue(hook.write_state(first, {"offset": 11}))
+        self.assertTrue(hook.write_state(second, {"offset": 22}))
+        self.assertEqual(hook.read_state(first)["offset"], 11)
+        self.assertEqual(hook.read_state(second)["offset"], 22)
+
+    def test_a_concurrent_writer_working_from_a_stale_snapshot_loses_nothing(self) -> None:
+        mine = hook.state_file(self.root, "mine")
+        theirs = hook.state_file(self.root, "theirs")
+        hook.write_state(mine, {"offset": 1})
+        stale = hook.read_state(theirs)
+        hook.write_state(mine, {"offset": 2})
+        stale["offset"] = 99
+        hook.write_state(theirs, stale)
+        self.assertEqual(hook.read_state(mine)["offset"], 2)
+        self.assertEqual(hook.read_state(theirs)["offset"], 99)
+
+    def test_unsafe_session_ids_stay_inside_the_state_directory(self) -> None:
+        path = hook.state_file(self.root, "../../etc/passwd")
+        self.assertEqual(path.parent, self.root / hook.STATE_RELATIVE)
+        self.assertNotIn("/", path.name.replace(".json", ""))
+
+    def test_distinct_long_ids_never_share_a_file(self) -> None:
+        prefix = "s" * 120
+        self.assertNotEqual(
+            hook.state_file(self.root, prefix + "one"), hook.state_file(self.root, prefix + "two")
+        )
+
+    def test_pruning_removes_only_stale_files(self) -> None:
+        directory = self.root / hook.STATE_RELATIVE
+        fresh = hook.state_file(self.root, "fresh")
+        stale = hook.state_file(self.root, "stale")
+        hook.write_state(fresh, {"offset": 1})
+        hook.write_state(stale, {"offset": 1})
+        old = time.time() - 40 * 86400
+        os.utime(stale, (old, old))
+        hook.prune_state(directory, 30)
+        self.assertTrue(fresh.is_file())
+        self.assertFalse(stale.is_file())
+
+    def test_pruning_a_missing_directory_is_silent(self) -> None:
+        hook.prune_state(self.root / "nowhere", 30)
 
     def test_the_temporary_file_is_never_left_behind(self) -> None:
-        path = self.root / hook.LEDGER_RELATIVE
-        hook.write_ledger(path, {"sessions": {"s": {"updated_at": "x"}}}, 10)
-        leftovers = list(path.parent.glob(f"{path.name}.tmp-*"))
-        self.assertEqual(leftovers, [])
+        path = hook.state_file(self.root, "session-1")
+        hook.write_state(path, {"offset": 3})
+        self.assertEqual(list(path.parent.glob("*.tmp-*")), [])
+
+    def test_an_unwritable_state_file_reports_failure(self) -> None:
+        path = hook.state_file(self.root, "session-1")
+        with mock.patch.object(hook.Path, "write_text", side_effect=PermissionError):
+            self.assertFalse(hook.write_state(path, {"offset": 1}))
 
 
 class TrustBoundaryTest(HookFixture):
