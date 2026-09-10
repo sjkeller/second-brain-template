@@ -564,7 +564,14 @@ def dispatch(root: Path, payload: dict[str, Any]) -> int:
     if event in RECALL_EVENTS and (recall_settings["in_vault"] or not in_vault):
         sections.append(recall_sections(root, payload, recall_settings))
 
-    suppressed = in_vault or payload.get("permission_mode") == "plan"
+    # `stop_hook_active` marks a turn that a Stop hook already extended. Both clients ask
+    # hooks to return success while it is set, and honouring it keeps their recurrence
+    # caps out of reach.
+    suppressed = (
+        in_vault
+        or payload.get("permission_mode") == "plan"
+        or payload.get("stop_hook_active") is True
+    )
     due = (
         event in HARVEST_EVENTS
         and not suppressed
@@ -583,7 +590,11 @@ def dispatch(root: Path, payload: dict[str, Any]) -> int:
         entry["pending_harvest"] = True
     if event == "SessionStart":
         entry["offset"] = position
-    write_state(path, entry)
+    if deliver and not write_state(path, entry):
+        # Without the persisted watermark nothing would stop this repeating on every turn.
+        deliver = False
+    elif not deliver:
+        write_state(path, entry)
 
     if deliver:
         sections.append(harvest_directive(activity, int(harvest_settings["max_notes"])))

@@ -427,6 +427,29 @@ class DeliveryTest(HookFixture):
         out = self.as_claude(self.payload("UserPromptSubmit", prompt="x", permission_mode="plan"))[1]
         self.assertIsNone(out)
 
+    def test_an_extended_turn_is_left_alone(self) -> None:
+        self.write_transcript(claude_lines(30, []))
+        code, out = self.as_claude(self.payload("Stop", stop_hook_active=True))
+        self.assertEqual(code, 0)
+        self.assertIsNone(out)
+        self.assertFalse(self.state().get("pending_harvest", False))
+
+    def test_an_unsaved_watermark_suppresses_the_signal(self) -> None:
+        self.write_transcript(claude_lines(30, []))
+        with mock.patch.object(hook, "write_state", return_value=False):
+            code, out = self.as_claude(self.payload("Stop"))
+        self.assertEqual(code, 0)
+        self.assertIsNone(out)
+
+    def test_the_signal_returns_once_state_can_be_saved_again(self) -> None:
+        self.write_transcript(claude_lines(30, []))
+        with mock.patch.object(hook, "write_state", return_value=False):
+            self.as_claude(self.payload("Stop"))
+        self.assertIn(
+            "SECOND BRAIN HARVEST DUE",
+            self.directive(self.as_claude(self.payload("Stop"))[1]),
+        )
+
     def test_delivery_matrix_matches_the_installed_clients(self) -> None:
         for event, claude, expected in (
             ("SessionStart", True, True),
