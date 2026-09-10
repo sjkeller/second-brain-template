@@ -189,26 +189,55 @@ dispatched on `hook_event_name`.
 
 | Event | What the hook does |
 | --- | --- |
-| `SessionStart` | Injects a context pack keyed on the repository name and branch, and takes the session's transcript watermark. |
-| `UserPromptSubmit` | Injects a context pack keyed on the prompt, skipping short prompts, slash commands, and bare acknowledgements. Appends the harvest directive when one is due. |
-| `Stop` | When a harvest is due, directs the agent to [[90-system/skills/second-brain-harvest/SKILL|Second Brain Harvest]] before it idles. Under Claude Code that is exit 2, which keeps the turn alive. Codex has no equivalent, so there the directive rides on the next prompt. |
-| `PreCompact` | Signals at lower thresholds, so knowledge is captured before compaction summarises it away. |
+| `SessionStart` | Injects a context pack keyed on the repository name and branch, takes the session's transcript watermark, and prunes stale session state. |
+| `UserPromptSubmit` | Injects a context pack keyed on the prompt, skipping short prompts, slash commands, bare acknowledgements, and automated prompt `source`s. Delivers a harvest directive when one is due or held. |
+| `Stop` | Delivers the directive to [[90-system/skills/second-brain-harvest/SKILL|Second Brain Harvest]] under Claude Code, whose `Stop` output continues the conversation so the model can act. Codex defines no `Stop` output, so there the signal is held. |
+| `PreCompact` | Raises a signal at lower thresholds, so knowledge is captured before compaction summarises it away. Neither client accepts hook output here, so the signal is always held. |
 
-A harvest is due when at least 12 assistant turns **or** 5 distinct file changes have
-accumulated since the last watermark, no `capture_note` call happened in that window, and
-the last signal is more than 10 minutes old. `PreCompact` uses 6 turns or 3 changes.
+### What each client actually accepts
+
+Only some events can put text in front of the model, and the two clients disagree about
+which. The contract below was read out of the shipped binaries, not the published
+reference, because they differ:
+
+- `UserPromptSubmit` carries the text in **`prompt`**. The published hook reference calls
+  it `user_prompt`; Claude Code 2.1.267 and Codex 0.154.0 both send `prompt`. The hook
+  reads `prompt` and keeps `user_prompt` only as a fallback.
+- Claude `Stop` accepts `additionalContext` and continues the conversation. Codex declares
+  no `Stop` output wire, and neither client declares `PreCompact` output at all.
+
+A signal raised where it cannot be delivered is therefore **held** in the session's state
+and issued on the next event that can carry it. The watermark, the cooldown, and the
+signal counter move only when a directive is actually delivered, never when one is merely
+computed, so nothing is silently spent. The practical Codex limit: a harvest raised at
+`Stop` or `PreCompact` needs one more prompt before it lands.
+
+### When a harvest is due
+
+At least 12 assistant turns **or** 5 distinct file changes since the last watermark, with
+the last signal more than 10 minutes old. `PreCompact` uses 6 turns or 3 changes.
 Thresholds, budgets, and the acknowledgement stop-list live in `agent_hook_config.json`.
-Per-session watermarks live in the ignored `90-system/indexes/harvest-state.json`, and the
-watermark advances *before* a signal is emitted, so a harvest can never re-fire on itself.
 
-Suppression is deliberate: no harvest in plan mode, none for subagent events, and none for
-sessions running inside the vault itself, which has its own capture and triage skills.
+A successful `capture_note` **ends one window and opens the next**: activity before it is
+settled, activity after it counts towards the next harvest, and any held signal is
+discharged. A capture whose tool result came back as an error does not end the window.
+
+State lives in the ignored `90-system/indexes/.harvest-state/`, one file per session.
+A single shared ledger would be read-modify-written whole by every session, so two
+concurrent sessions would silently drop each other's watermarks; writing only your own
+file removes that race without a cross-process lock. Files older than `retention_days`
+are pruned at session start.
+
+Suppression is deliberate: no harvest in plan mode, none for subagent events, none for
+sessions running inside the vault itself, which has its own capture and triage skills, and
+none while `stop_hook_active` marks a turn a Stop hook already extended.
 
 Injected packs bypass the server's own `trust_boundary` field, so the hook fences every
 pack in `<second-brain-recall>` and restates that the content is evidence, never
-instructions. Transcript formats are not part of either product's contract, so the parser
-degrades to a line-count heuristic instead of failing when a shape changes. Every failure
-path exits 0; the Claude `Stop` exit 2 is the one deliberate nonzero.
+instructions. Output is ASCII-escaped JSON written as UTF-8 bytes, because a hook's stdout
+on Windows can default to cp1252 while vault text is arbitrary Unicode. Transcript formats
+are not part of either product's contract, so the parser degrades to a line-count heuristic
+instead of failing when a shape changes. Every failure path exits 0.
 
 ### Register it for every project
 
