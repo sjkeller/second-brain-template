@@ -10,6 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 
@@ -99,13 +100,17 @@ class HookFixture(unittest.TestCase):
         base.update(overrides)
         return base
 
-    def dispatch(self, payload: dict) -> tuple[int, dict | None]:
-        buffer = io.StringIO()
-        with mock.patch.object(hook, "recall_block", return_value=""):
-            with mock.patch.object(sys, "stdout", buffer):
-                code = hook.dispatch(self.root, payload)
-        text = buffer.getvalue().strip()
+    def dispatch(self, payload: dict, recall: str = "") -> tuple[int, dict | None]:
+        code, raw = self.dispatch_bytes(payload, recall)
+        text = raw.decode("utf-8").strip()
         return code, json.loads(text) if text else None
+
+    def dispatch_bytes(self, payload: dict, recall: str = "") -> tuple[int, bytes]:
+        stream = io.BytesIO()
+        with mock.patch.object(hook, "recall_block", return_value=recall):
+            with mock.patch.object(sys, "stdout", SimpleNamespace(buffer=stream)):
+                code = hook.dispatch(self.root, payload)
+        return code, stream.getvalue()
 
     def ledger(self) -> dict:
         return hook.read_ledger(self.root / hook.LEDGER_RELATIVE)
@@ -226,6 +231,27 @@ class PromptContractTest(HookFixture):
     def test_sdk_authored_prompts_still_recall(self) -> None:
         payload = self.payload("UserPromptSubmit", prompt=self.QUESTION, source="sdk")
         self.assertEqual(self.queried(payload), self.QUESTION)
+
+
+class OutputEncodingTest(HookFixture):
+    """Hook stdout is a byte protocol, not a locale-encoded text stream."""
+
+    JAPANESE = "ハートレートの設定"
+
+    def test_non_ascii_recall_survives_a_cp1252_stdout(self) -> None:
+        pack = "\n".join(("<second-brain-recall>", self.JAPANESE, "</second-brain-recall>"))
+        code, raw = self.dispatch_bytes(self.payload("SessionStart"), recall=pack)
+        self.assertEqual(code, 0)
+        raw.decode("ascii")
+        restored = json.loads(raw.decode("utf-8"))
+        self.assertIn(self.JAPANESE, restored["hookSpecificOutput"]["additionalContext"])
+
+    def test_emit_writes_bytes_not_text(self) -> None:
+        stream = io.BytesIO()
+        with mock.patch.object(sys, "stdout", SimpleNamespace(buffer=stream)):
+            hook.emit("SessionStart", self.JAPANESE)
+        self.assertTrue(stream.getvalue().endswith(b"\n"))
+        stream.getvalue().decode("ascii")
 
 
 class DispatchTest(HookFixture):

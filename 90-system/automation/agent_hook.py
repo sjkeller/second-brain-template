@@ -391,7 +391,11 @@ def emit(event: str, additional_context: str = "", system_message: str = "") -> 
     payload: dict[str, Any] = {"hookSpecificOutput": specific}
     if system_message:
         payload["systemMessage"] = system_message
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+    # Windows redirected stdout can default to cp1252, and vault text is arbitrary Unicode.
+    # ASCII-escaped JSON encoded to UTF-8 bytes is independent of that locale.
+    encoded = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+    sys.stdout.buffer.write(encoded + b"\n")
+    sys.stdout.buffer.flush()
 
 
 def entry_for(ledger: dict[str, Any], session_id: object) -> tuple[str, dict[str, Any]]:
