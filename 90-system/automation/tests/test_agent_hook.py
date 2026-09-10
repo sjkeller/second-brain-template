@@ -345,31 +345,103 @@ class OutputEncodingTest(HookFixture):
         stream.getvalue().decode("ascii")
 
 
-class DispatchTest(HookFixture):
-    def test_stop_signals_once_and_advances_the_watermark(self) -> None:
-        self.write_transcript(claude_lines(20, ["a.c", "b.c"]))
-        stderr = io.StringIO()
+class DeliveryTest(HookFixture):
+    """A signal is only spent on an event whose client contract can carry it."""
+
+    def as_claude(self, payload: dict) -> tuple[int, dict | None]:
         with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(self.work)}):
-            with mock.patch.object(sys, "stderr", stderr):
-                first = self.dispatch(self.payload("Stop"))[0]
-        self.assertEqual(first, 2)
-        self.assertIn("SECOND BRAIN HARVEST DUE", stderr.getvalue())
+            return self.dispatch(payload)
+
+    def as_codex(self, payload: dict) -> tuple[int, dict | None]:
+        with mock.patch.dict(os.environ, {}, clear=True):
+            return self.dispatch(payload)
+
+    def directive(self, payload: dict | None) -> str:
+        return "" if payload is None else payload["hookSpecificOutput"].get("additionalContext", "")
+
+    def test_claude_stop_delivers_by_additional_context_and_exits_zero(self) -> None:
+        self.write_transcript(claude_lines(20, ["a.c", "b.c"]))
+        code, out = self.as_claude(self.payload("Stop"))
+        self.assertEqual(code, 0)
+        self.assertEqual(out["hookSpecificOutput"]["hookEventName"], "Stop")
+        self.assertIn("SECOND BRAIN HARVEST DUE", self.directive(out))
 
         entry = self.state()
         self.assertEqual(entry["offset"], self.transcript.stat().st_size)
         self.assertEqual(entry["signals"], 1)
+        self.assertFalse(entry["pending_harvest"])
 
-        with mock.patch.dict(os.environ, {"CLAUDE_PROJECT_DIR": str(self.work)}):
-            second = self.dispatch(self.payload("Stop"))[0]
-        self.assertEqual(second, 0)
+        self.assertIsNone(self.as_claude(self.payload("Stop"))[1])
 
-    def test_stop_without_claude_falls_back_to_additional_context(self) -> None:
+    def test_codex_stop_holds_the_signal_instead_of_emitting(self) -> None:
         self.write_transcript(claude_lines(20, []))
-        with mock.patch.dict(os.environ, {}, clear=True):
-            code, payload = self.dispatch(self.payload("Stop"))
+        code, out = self.as_codex(self.payload("Stop"))
         self.assertEqual(code, 0)
-        self.assertIn("SECOND BRAIN HARVEST DUE", payload["hookSpecificOutput"]["additionalContext"])
+        self.assertIsNone(out)
 
+        entry = self.state()
+        self.assertTrue(entry["pending_harvest"])
+        self.assertEqual(entry.get("signals", 0), 0)
+        self.assertNotIn("last_signal_at", entry)
+        self.assertEqual(entry.get("offset", 0), 0)
+
+    def test_precompact_holds_the_signal_in_both_clients(self) -> None:
+        self.write_transcript(claude_lines(8, []))
+        for run in (self.as_claude, self.as_codex):
+            self.assertIsNone(run(self.payload("PreCompact", trigger="auto"))[1])
+            self.assertTrue(self.state()["pending_harvest"])
+
+    def test_a_held_signal_is_delivered_on_the_next_prompt(self) -> None:
+        self.write_transcript(claude_lines(20, []))
+        self.as_codex(self.payload("Stop"))
+        code, out = self.as_codex(self.payload("UserPromptSubmit", prompt="ok"))
+        self.assertEqual(code, 0)
+        self.assertIn("SECOND BRAIN HARVEST DUE", self.directive(out))
+        entry = self.state()
+        self.assertFalse(entry["pending_harvest"])
+        self.assertEqual(entry["signals"], 1)
+
+    def test_a_held_signal_survives_the_cooldown_that_never_started(self) -> None:
+        self.write_transcript(claude_lines(20, []))
+        self.as_codex(self.payload("Stop"))
+        self.as_codex(self.payload("Stop"))
+        self.assertIn(
+            "SECOND BRAIN HARVEST DUE",
+            self.directive(self.as_codex(self.payload("UserPromptSubmit", prompt="x"))[1]),
+        )
+
+    def test_a_capture_settles_a_held_signal(self) -> None:
+        self.write_transcript(claude_lines(20, []))
+        self.as_codex(self.payload("Stop"))
+        self.assertTrue(self.state()["pending_harvest"])
+
+        self.write_transcript(claude_lines(20, []) + [capture_line()])
+        code, out = self.as_codex(self.payload("UserPromptSubmit", prompt="x"))
+        self.assertEqual(code, 0)
+        self.assertIsNone(out)
+        self.assertFalse(self.state()["pending_harvest"])
+
+    def test_a_held_signal_is_not_delivered_in_plan_mode(self) -> None:
+        self.write_transcript(claude_lines(20, []))
+        self.as_codex(self.payload("Stop"))
+        out = self.as_claude(self.payload("UserPromptSubmit", prompt="x", permission_mode="plan"))[1]
+        self.assertIsNone(out)
+
+    def test_delivery_matrix_matches_the_installed_clients(self) -> None:
+        for event, claude, expected in (
+            ("SessionStart", True, True),
+            ("SessionStart", False, True),
+            ("UserPromptSubmit", True, True),
+            ("UserPromptSubmit", False, True),
+            ("Stop", True, True),
+            ("Stop", False, False),
+            ("PreCompact", True, False),
+            ("PreCompact", False, False),
+        ):
+            self.assertEqual(hook.delivers_to_model(event, claude), expected, (event, claude))
+
+
+class DispatchTest(HookFixture):
     def test_plan_mode_never_harvests(self) -> None:
         self.write_transcript(claude_lines(30, []))
         code, payload = self.dispatch(self.payload("Stop", permission_mode="plan"))

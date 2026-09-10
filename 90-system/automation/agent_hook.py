@@ -11,9 +11,11 @@ Two automations share one entry point, dispatched on ``hook_event_name``:
 Retrieved vault text is untrusted evidence. The MCP server wraps its own results in a
 trust boundary; this hook bypasses that path, so it fences every injected pack itself.
 
-Any failure exits successfully: a knowledge convenience must never break a session. The
-single deliberate exception is the Claude ``Stop`` signal, which exits 2 on purpose so
-Claude keeps working instead of idling with the harvest undone.
+Only some events can put text in front of the model, and the two clients disagree about
+which. A harvest signal raised where it cannot be delivered is held in the session's state
+and issued on the next event that can carry it, so no signal is silently lost.
+
+Any failure exits successfully: a knowledge convenience must never break a session.
 """
 
 from __future__ import annotations
@@ -460,6 +462,19 @@ def harvest_directive(activity: Activity, max_notes: int) -> str:
     )
 
 
+def delivers_to_model(event: str, claude: bool) -> bool:
+    """Whether this event can actually put text in front of the model.
+
+    Claude Code 2.1.267 accepts ``additionalContext`` on ``Stop`` and continues the
+    conversation so the model can act on it. Codex 0.154.0 defines no ``Stop`` output wire,
+    and neither client accepts hook output on ``PreCompact`` at all. A signal raised on an
+    event that cannot deliver it is held until one that can.
+    """
+    if event in ("SessionStart", "UserPromptSubmit"):
+        return True
+    return event == "Stop" and claude
+
+
 def emit(event: str, additional_context: str = "", system_message: str = "") -> None:
     specific: dict[str, Any] = {"hookEventName": event}
     if additional_context:
@@ -538,42 +553,45 @@ def dispatch(root: Path, payload: dict[str, Any]) -> int:
         payload.get("transcript_path"), int(entry.get("offset", 0) or 0)
     )
 
+    stamp = utc_now().isoformat(timespec="seconds")
+    entry.update({"cwd": payload.get("cwd"), "updated_at": stamp})
+    if activity.capture_offset is not None:
+        # A successful capture accounts for the work before it and settles any held signal.
+        entry["offset"] = max(int(entry.get("offset", 0) or 0), activity.capture_offset)
+        entry["pending_harvest"] = False
+
     sections: list[str] = []
     if event in RECALL_EVENTS and (recall_settings["in_vault"] or not in_vault):
         sections.append(recall_sections(root, payload, recall_settings))
 
-    harvestable = (
+    suppressed = in_vault or payload.get("permission_mode") == "plan"
+    due = (
         event in HARVEST_EVENTS
-        and not in_vault
-        and payload.get("permission_mode") != "plan"
+        and not suppressed
         and is_due(activity, entry, harvest_settings, event == "PreCompact")
     )
+    wanted = not suppressed and (due or bool(entry.get("pending_harvest")))
+    deliver = wanted and delivers_to_model(str(event), bool(os.environ.get("CLAUDE_PROJECT_DIR")))
 
-    stamp = utc_now().isoformat(timespec="seconds")
-    entry.update({"cwd": payload.get("cwd"), "updated_at": stamp})
-    if activity.capture_offset is not None:
-        # Work before a successful capture is accounted for; never rescan it.
-        entry["offset"] = max(int(entry.get("offset", 0) or 0), activity.capture_offset)
-    if event == "SessionStart" or harvestable:
-        # Advance the watermark before signalling, so a harvest cannot re-fire on itself.
+    if deliver:
+        # The watermark and cooldown move only for a signal the model actually receives.
         entry["offset"] = position
-    if harvestable:
         entry["last_signal_at"] = stamp
         entry["signals"] = int(entry.get("signals", 0) or 0) + 1
+        entry["pending_harvest"] = False
+    elif wanted:
+        entry["pending_harvest"] = True
+    if event == "SessionStart":
+        entry["offset"] = position
     write_state(path, entry)
 
-    directive = harvest_directive(activity, int(harvest_settings["max_notes"])) if harvestable else ""
-    if directive and event == "Stop" and os.environ.get("CLAUDE_PROJECT_DIR"):
-        # Claude alone can be told to keep working, and exit 2 is that instruction.
-        sys.stderr.write(directive + "\n")
-        return 2
-    if directive:
-        sections.append(directive)
+    if deliver:
+        sections.append(harvest_directive(activity, int(harvest_settings["max_notes"])))
 
     context = "\n\n".join(section for section in sections if section)
     if not context:
         return 0
-    emit(str(event), context, "Second Brain: harvest due." if directive else "")
+    emit(str(event), context, "Second Brain: harvest due." if deliver else "")
     return 0
 
 
