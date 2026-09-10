@@ -195,6 +195,39 @@ class RecallGateTest(HookFixture):
         self.assertFalse(hook.worth_recalling(padded, self.settings))
 
 
+class PromptContractTest(HookFixture):
+    """The installed clients send `prompt`; the published reference says `user_prompt`."""
+
+    QUESTION = "How does the CCCD bit field decode on this stack, and why?"
+
+    def queried(self, payload: dict) -> str | None:
+        seen: list[str] = []
+        with mock.patch.object(hook, "recall_block", side_effect=lambda r, q, s: seen.append(q) or ""):
+            hook.recall_sections(self.root, payload, hook.DEFAULTS["recall"])
+        return seen[0] if seen else None
+
+    def test_claude_prompt_field_reaches_recall(self) -> None:
+        payload = self.payload("UserPromptSubmit", prompt=self.QUESTION, source="user")
+        self.assertEqual(self.queried(payload), self.QUESTION)
+
+    def test_codex_prompt_field_reaches_recall(self) -> None:
+        payload = {"hook_event_name": "UserPromptSubmit", "turn_id": "t1", "prompt": self.QUESTION}
+        self.assertEqual(self.queried(payload), self.QUESTION)
+
+    def test_documented_user_prompt_field_still_works(self) -> None:
+        payload = self.payload("UserPromptSubmit", user_prompt=self.QUESTION)
+        self.assertEqual(self.queried(payload), self.QUESTION)
+
+    def test_automated_prompt_sources_are_skipped(self) -> None:
+        for source in ("system", "loop_wakeup", "schedule_wakeup", "poll_event"):
+            payload = self.payload("UserPromptSubmit", prompt=self.QUESTION, source=source)
+            self.assertIsNone(self.queried(payload), source)
+
+    def test_sdk_authored_prompts_still_recall(self) -> None:
+        payload = self.payload("UserPromptSubmit", prompt=self.QUESTION, source="sdk")
+        self.assertEqual(self.queried(payload), self.QUESTION)
+
+
 class DispatchTest(HookFixture):
     def test_stop_signals_once_and_advances_the_watermark(self) -> None:
         self.write_transcript(claude_lines(20, ["a.c", "b.c"]))
