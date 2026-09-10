@@ -1,0 +1,24 @@
+{
+  "recall": {
+    "budget_tokens": 1200,
+    "limit": 4,
+    "min_prompt_chars": 40,
+    "in_vault": false,
+    "acknowledgements": [
+      "yes", "y", "yeah", "yep", "no", "ok", "okay", "k", "sure", "thanks",
+      "thank you", "continue", "go on", "go ahead", "proceed", "do it",
+      "please do", "stop", "wait", "fix it", "try again", "again", "next", "done"
+    ]
+  },
+  "harvest": {
+    "assistant_turns": 12,
+    "edits": 5,
+    "precompact_assistant_turns": 6,
+    "precompact_edits": 3,
+    "cooldown_seconds": 600,
+    "max_notes": 3
+  },
+  "ledger": {
+    "retention_days": 30
+  }
+}

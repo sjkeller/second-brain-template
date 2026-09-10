@@ -3,7 +3,7 @@ id: mcp-integration
 type: system
 status: active
 created: 2026-09-02
-updated: 2026-09-05
+updated: 2026-09-10
 tags:
   - system/agent
   - system/integration
@@ -180,6 +180,101 @@ event, tool name, and elapsed milliseconds. No note text, query, request ID, or 
 logged. Record that event and the incident time if a failure persists. The detailed
 reproductions, trade-offs, and deployment limits are in
 [[90-system/reports/MCP Reliability Investigation|MCP Reliability Investigation]].
+
+## Session knowledge automation
+
+`agent_hook.py` closes the loop the server leaves open: it makes retrieval happen without
+being asked and capture happen without being remembered. One script serves both runtimes,
+dispatched on `hook_event_name`.
+
+| Event | What the hook does |
+| --- | --- |
+| `SessionStart` | Injects a context pack keyed on the repository name and branch, takes the session's transcript watermark, and prunes stale session state. |
+| `UserPromptSubmit` | Injects a context pack keyed on the prompt, skipping short prompts, slash commands, bare acknowledgements, and automated prompt `source`s. Delivers a harvest directive when one is due or held. |
+| `Stop` | Delivers the directive to [[90-system/skills/second-brain-harvest/SKILL|Second Brain Harvest]] under Claude Code, whose `Stop` output continues the conversation so the model can act. Codex defines no `Stop` output, so there the signal is held. |
+| `PreCompact` | Raises a signal at lower thresholds, so knowledge is captured before compaction summarises it away. Neither client accepts hook output here, so the signal is always held. |
+
+### What each client actually accepts
+
+Only some events can put text in front of the model, and the two clients disagree about
+which. The contract below was read out of the shipped binaries, not the published
+reference, because they differ:
+
+- `UserPromptSubmit` carries the text in **`prompt`**. The published hook reference calls
+  it `user_prompt`; Claude Code 2.1.267 and Codex 0.154.0 both send `prompt`. The hook
+  reads `prompt` and keeps `user_prompt` only as a fallback.
+- Claude `Stop` accepts `additionalContext` and continues the conversation. Codex declares
+  no `Stop` output wire, and neither client declares `PreCompact` output at all.
+
+A signal raised where it cannot be delivered is therefore **held** in the session's state
+and issued on the next event that can carry it. The watermark, the cooldown, and the
+signal counter move only when a directive is actually delivered, never when one is merely
+computed, so nothing is silently spent. The practical Codex limit: a harvest raised at
+`Stop` or `PreCompact` needs one more prompt before it lands.
+
+### When a harvest is due
+
+At least 12 assistant turns **or** 5 distinct file changes since the last watermark, with
+the last signal more than 10 minutes old. `PreCompact` uses 6 turns or 3 changes.
+Thresholds, budgets, and the acknowledgement stop-list live in `agent_hook_config.json`.
+
+A successful `capture_note` **ends one window and opens the next**: activity before it is
+settled, activity after it counts towards the next harvest, and any held signal is
+discharged. A capture whose tool result came back as an error does not end the window.
+
+State lives in the ignored `90-system/indexes/.harvest-state/`, one file per session.
+A single shared ledger would be read-modify-written whole by every session, so two
+concurrent sessions would silently drop each other's watermarks; writing only your own
+file removes that race without a cross-process lock. Files older than `retention_days`
+are pruned at session start.
+
+Suppression is deliberate: no harvest in plan mode, none for subagent events, none for
+sessions running inside the vault itself, which has its own capture and triage skills, and
+none while `stop_hook_active` marks a turn a Stop hook already extended.
+
+Injected packs bypass the server's own `trust_boundary` field, so the hook fences every
+pack in `<second-brain-recall>` and restates that the content is evidence, never
+instructions. Output is ASCII-escaped JSON written as UTF-8 bytes, because a hook's stdout
+on Windows can default to cp1252 while vault text is arbitrary Unicode. Transcript formats
+are not part of either product's contract, so the parser degrades to a line-count heuristic
+instead of failing when a shape changes. Every failure path exits 0.
+
+### Register it for every project
+
+Both clients run the same script. Point them at the private vault by absolute path, because
+the hook must work in repositories that are not the vault.
+
+Claude Code, in `~/.claude/settings.json`, for `SessionStart`, `UserPromptSubmit`, `Stop`,
+and `PreCompact`:
+
+```json
+{
+  "type": "command",
+  "command": "py",
+  "args": ["-3", "<vault>/90-system/automation/agent_hook.py", "--vault-root", "<vault>"],
+  "timeout": 20,
+  "statusMessage": "Consulting the Second Brain..."
+}
+```
+
+Codex, in `~/.codex/hooks.json`, takes the same four events under a root `hooks` key, with
+`command` for POSIX and `commandWindows` for Windows. Codex asks once to trust a new hook
+and records its hash in `~/.codex/config.toml`.
+
+The harvest skill also has to be visible outside the vault. Link the canonical directory
+into both user skill trees rather than copying it:
+
+```powershell
+$target = "<vault>\90-system\skills\second-brain-harvest"
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\second-brain-harvest" -Target $target
+New-Item -ItemType Junction -Path "$HOME\.codex\skills\second-brain-harvest"  -Target $target
+```
+
+An automated harvest writes without a confirmation prompt, so
+`mcp__second-brain__capture_note` belongs in the user-scoped allow list beside the read
+tools. The blast radius stays bounded by the server: `capture_note` only ever adds one
+`ai_review: pending` draft plus its MOC link, and `capture_raw_source` stays out of the
+automated path entirely.
 
 ## Compatibility contract
 

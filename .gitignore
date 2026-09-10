@@ -25,6 +25,9 @@ __pycache__/
 90-system/indexes/.mcp-write.lock
 90-system/indexes/mcp-audit.jsonl
 
+# Per-session harvest watermarks for the knowledge automation hook. Disposable state.
+90-system/indexes/.harvest-state/
+
 # Private retrieval judgments and generated evaluation reports. The fictional example is
 # versioned so the schema remains discoverable without publishing personal queries.
 90-system/evals/*.jsonl

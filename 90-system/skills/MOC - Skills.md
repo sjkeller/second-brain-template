@@ -3,7 +3,7 @@ id: moc-skills
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-01
+updated: 2026-09-10
 tags:
   - system/moc
   - system/skills
@@ -20,6 +20,7 @@ Skills are reusable, progressively disclosed workflows. Their descriptions shoul
 - [[90-system/skills/vault-triage/SKILL|Vault Triage]] — clarify, file, and link the Inbox.
 - [[90-system/skills/vault-review/SKILL|Vault Review]] — the weekly pass over the whole vault.
 - [[90-system/skills/vault-maintenance/SKILL|Vault Maintenance]] — retrieval, linking, and health.
+- [[90-system/skills/second-brain-harvest/SKILL|Second Brain Harvest]] — distil a finished session into review-pending drafts.
 - [[90-system/skills/vault-maintenance/references/schema|Vault skill schema]]
 - [[90-system/skills/_template/SKILL|Skill Template]]
 
