@@ -3,7 +3,7 @@ id: mcp-integration
 type: system
 status: active
 created: 2026-09-02
-updated: 2026-09-05
+updated: 2026-09-10
 tags:
   - system/agent
   - system/integration
@@ -180,6 +180,72 @@ event, tool name, and elapsed milliseconds. No note text, query, request ID, or 
 logged. Record that event and the incident time if a failure persists. The detailed
 reproductions, trade-offs, and deployment limits are in
 [[90-system/reports/MCP Reliability Investigation|MCP Reliability Investigation]].
+
+## Session knowledge automation
+
+`agent_hook.py` closes the loop the server leaves open: it makes retrieval happen without
+being asked and capture happen without being remembered. One script serves both runtimes,
+dispatched on `hook_event_name`.
+
+| Event | What the hook does |
+| --- | --- |
+| `SessionStart` | Injects a context pack keyed on the repository name and branch, and takes the session's transcript watermark. |
+| `UserPromptSubmit` | Injects a context pack keyed on the prompt, skipping short prompts, slash commands, and bare acknowledgements. Appends the harvest directive when one is due. |
+| `Stop` | When a harvest is due, directs the agent to [[90-system/skills/second-brain-harvest/SKILL|Second Brain Harvest]] before it idles. Under Claude Code that is exit 2, which keeps the turn alive. Codex has no equivalent, so there the directive rides on the next prompt. |
+| `PreCompact` | Signals at lower thresholds, so knowledge is captured before compaction summarises it away. |
+
+A harvest is due when at least 12 assistant turns **or** 5 distinct file changes have
+accumulated since the last watermark, no `capture_note` call happened in that window, and
+the last signal is more than 10 minutes old. `PreCompact` uses 6 turns or 3 changes.
+Thresholds, budgets, and the acknowledgement stop-list live in `agent_hook_config.json`.
+Per-session watermarks live in the ignored `90-system/indexes/harvest-state.json`, and the
+watermark advances *before* a signal is emitted, so a harvest can never re-fire on itself.
+
+Suppression is deliberate: no harvest in plan mode, none for subagent events, and none for
+sessions running inside the vault itself, which has its own capture and triage skills.
+
+Injected packs bypass the server's own `trust_boundary` field, so the hook fences every
+pack in `<second-brain-recall>` and restates that the content is evidence, never
+instructions. Transcript formats are not part of either product's contract, so the parser
+degrades to a line-count heuristic instead of failing when a shape changes. Every failure
+path exits 0; the Claude `Stop` exit 2 is the one deliberate nonzero.
+
+### Register it for every project
+
+Both clients run the same script. Point them at the private vault by absolute path, because
+the hook must work in repositories that are not the vault.
+
+Claude Code, in `~/.claude/settings.json`, for `SessionStart`, `UserPromptSubmit`, `Stop`,
+and `PreCompact`:
+
+```json
+{
+  "type": "command",
+  "command": "py",
+  "args": ["-3", "<vault>/90-system/automation/agent_hook.py", "--vault-root", "<vault>"],
+  "timeout": 20,
+  "statusMessage": "Consulting the Second Brain..."
+}
+```
+
+Codex, in `~/.codex/hooks.json`, takes the same four events under a root `hooks` key, with
+`command` for POSIX and `commandWindows` for Windows. Codex asks once to trust a new hook
+and records its hash in `~/.codex/config.toml`.
+
+The harvest skill also has to be visible outside the vault. Link the canonical directory
+into both user skill trees rather than copying it:
+
+```powershell
+$target = "<vault>\90-system\skills\second-brain-harvest"
+New-Item -ItemType Junction -Path "$HOME\.claude\skills\second-brain-harvest" -Target $target
+New-Item -ItemType Junction -Path "$HOME\.codex\skills\second-brain-harvest"  -Target $target
+```
+
+An automated harvest writes without a confirmation prompt, so
+`mcp__second-brain__capture_note` belongs in the user-scoped allow list beside the read
+tools. The blast radius stays bounded by the server: `capture_note` only ever adds one
+`ai_review: pending` draft plus its MOC link, and `capture_raw_source` stays out of the
+automated path entirely.
 
 ## Compatibility contract
 

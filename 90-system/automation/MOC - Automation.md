@@ -3,7 +3,7 @@ id: moc-automation
 type: moc
 status: active
 created: 2026-09-01
-updated: 2026-09-05
+updated: 2026-09-10
 tags:
   - system/moc
   - system/automation
@@ -40,6 +40,13 @@ The local `mcp_server.py` exposes the same retrieval primitives to user-scoped C
 and Codex sessions without adding a second index or sending text to a remote embedding
 service. It also provides two narrowly additive capture tools. Configuration, tool policy,
 and compatibility details are in [[90-system/MCP Integration|MCP Integration]].
+
+`agent_hook.py` builds on the same primitives to make retrieval and capture automatic in
+every session: it injects a context pack at session start and on substantive prompts, and
+directs the agent to [[90-system/skills/second-brain-harvest/SKILL|Second Brain Harvest]]
+once enough new knowledge has accumulated. Thresholds live beside it in
+`agent_hook_config.json`; the events, suppression rules, and client registration are in
+[[90-system/MCP Integration|MCP Integration]].
 
 ## Author
 
@@ -92,6 +99,9 @@ outside the untrusted payload boundary can do that.
 - `python3 -m unittest discover -s 90-system/automation/tests` — the test suite.
 - `mcp_hook.py --vault-root <vault>` — shared non-blocking Claude/Codex MCP audit hook;
   it reads one hook JSON object from stdin and never logs tool arguments or results.
+- `agent_hook.py --vault-root <vault>` — shared Claude/Codex session knowledge hook; it
+  reads one hook JSON object from stdin, injects fenced vault evidence, and signals when a
+  harvest is due. Every failure path exits 0.
 
 ## How retrieval stays fast
 
