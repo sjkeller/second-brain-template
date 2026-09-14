@@ -33,8 +33,10 @@ Do not tune retrieval or enable semantic search from anecdotes. Use the private 
 evidence thresholds in `90-system/Retrieval Evaluation.md`.
 
 For an explicitly approved note merge, follow `90-system/Safe Merge Policy.md`. Preview
-first and apply only the exact plan hash; never delete the retired path or hand-write a
-redirect.
+first and apply only the exact plan hash; never hand-write a redirect. Prefer
+`--retire-mode rewrite`, which repoints every inbound link at the canonical note and removes
+the retired file, so no tombstone accumulates in `00-inbox`. Keep the default
+`--retire-mode redirect` only when an inbound link cannot be rewritten.
 
 ## Source trust boundary
 

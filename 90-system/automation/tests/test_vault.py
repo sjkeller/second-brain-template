@@ -1714,6 +1714,127 @@ class SafeMergeTests(VaultFixture):
         self.assertEqual(code, 0, payload)
         self.assertEqual(payload["summary"]["duplicate_titles"], 0)
 
+    def rewrite_preview(self):
+        return run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            False,
+            None,
+            False,
+            True,
+            "rewrite",
+        )
+
+    def test_default_retire_mode_differs_from_rewrite(self):
+        self.write_merged_body()
+        _, redirect_plan = self.preview()
+        _, rewrite_plan = self.rewrite_preview()
+        self.assertEqual(redirect_plan["retire_mode"], "redirect")
+        self.assertTrue(redirect_plan["changes"]["retired_becomes_redirect"])
+        self.assertFalse(redirect_plan["changes"]["retired_deleted"])
+        self.assertNotEqual(redirect_plan["plan_sha256"], rewrite_plan["plan_sha256"])
+
+    def test_rewrite_mode_repoints_inbound_links_and_deletes_the_retired_note(self):
+        self.write(
+            "40-knowledge/concepts/Cites Build Search.md",
+            note_text(
+                "cites-build-search", "concept", "Cites Build Search",
+                "[[40-knowledge/concepts/MOC - Concepts]]",
+            )
+            + "\nSee [[10-projects/Build Search|the search project]] and [[Build Search]].\n"
+            + "\n```\n[[10-projects/Build Search]]\n```\n",
+        )
+        self.write_merged_body()
+        code, preview = self.rewrite_preview()
+        self.assertEqual(code, 0)
+        self.assertTrue(preview["changes"]["retired_deleted"])
+        self.assertFalse(preview["changes"]["retired_becomes_redirect"])
+        self.assertEqual(
+            [entry["path"] for entry in preview["changes"]["inbound_rewrites"]],
+            ["40-knowledge/concepts/Cites Build Search.md"],
+        )
+        self.assertEqual(preview["changes"]["inbound_rewrites"][0]["links"], 2)
+
+        code, applied = run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            True,
+            preview["plan_sha256"],
+            True,
+            True,
+            "rewrite",
+        )
+        self.assertEqual(code, 0, applied)
+        self.assertFalse((self.root / "10-projects/Build Search.md").exists())
+        citing = (self.root / "40-knowledge/concepts/Cites Build Search.md").read_text(encoding="utf-8")
+        # The human alias survives; an alias naming the retired note is replaced.
+        self.assertIn("[[40-knowledge/concepts/Retrieval|the search project]]", citing)
+        self.assertIn("[[40-knowledge/concepts/Retrieval|Retrieval]]", citing)
+        # A link inside a fenced block is sample text, not a reference.
+        self.assertIn("```\n[[10-projects/Build Search]]\n```", citing)
+
+        code, health = run(vault.command_check, self.root, True, False, True, 180, 60)
+        self.assertEqual(code, 0, health)
+        self.assertEqual(health["summary"]["unresolved_links"], 0)
+
+    def test_rewrite_mode_collapses_a_moc_entry_that_became_a_duplicate(self):
+        moc = self.root / "40-knowledge/concepts/MOC - Concepts.md"
+        moc.write_text(
+            moc.read_text(encoding="utf-8")
+            + "- [[10-projects/Build Search|Build Search]]\n",
+            encoding="utf-8",
+        )
+        self.write_merged_body()
+        code, preview = self.rewrite_preview()
+        self.assertEqual(code, 0)
+        code, applied = run(
+            vault.command_merge,
+            self.root,
+            "40-knowledge/concepts/Retrieval.md",
+            "10-projects/Build Search.md",
+            "90-system/indexes/.merge-drafts/retrieval.md",
+            True,
+            preview["plan_sha256"],
+            True,
+            True,
+            "rewrite",
+        )
+        self.assertEqual(code, 0, applied)
+        lines = moc.read_text(encoding="utf-8").splitlines()
+        canonical_entries = [
+            line for line in lines
+            if line.strip() == "- [[40-knowledge/concepts/Retrieval|Retrieval]]"
+        ]
+        self.assertEqual(len(canonical_entries), 1)
+
+    def test_rewrite_mode_reports_links_it_must_not_edit(self):
+        self.write(
+            "30-resources/sources/raw/Raw Cite.md",
+            note_text(
+                "raw-cite", "raw-source", "Raw Cite",
+                "[[30-resources/MOC - Resources]]",
+            )
+            # Structural region only: a link inside the sealed payload is already outside
+            # the link graph, so the guard has to be exercised above the begin marker.
+            + "\n[[10-projects/Build Search]]\n"
+            + f"\n{vault.RAW_SOURCE_BEGIN}\npayload\n{vault.RAW_SOURCE_END}\n",
+        )
+        self.write_merged_body()
+        code, preview = self.rewrite_preview()
+        self.assertEqual(code, 0)
+        self.assertEqual(
+            preview["changes"]["inbound_unrewritable"],
+            ["30-resources/sources/raw/Raw Cite.md"],
+        )
+        self.assertEqual(preview["changes"]["inbound_rewrites"], [])
+        self.assertTrue(preview["warnings_require_acceptance"])
+
     def test_merge_refuses_to_create_a_redirect_chain(self):
         self.write(
             "00-inbox/Old Build Search.md",

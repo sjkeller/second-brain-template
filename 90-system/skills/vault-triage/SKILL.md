@@ -43,7 +43,7 @@ links or embeds for reuse. Preserve the AI-review property and callout until hum
 
 Never bulk-delete, and never merge two notes without explicit confirmation. For an agreed
 merge, follow [[90-system/Safe Merge Policy]]: prepare the reviewed body, show the dry-run
-plan, then apply its exact hash and leave the retired redirect. When a capture is too thin
+plan, then apply its exact hash with `--retire-mode rewrite`. When a capture is too thin
 to file, say so and leave it in the Inbox rather than inventing context for it.
 
 ## Finish

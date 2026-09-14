@@ -12,9 +12,15 @@ tags:
 # Safe Merge Policy
 
 A merge changes identity and can silently discard provenance. Never merge by concatenating
-files or deleting the older note. `vault.py merge` keeps one canonical identity, replaces
-the retired note with a checked redirect, and requires an exact preview hash before it can
-write either file.
+files or hand-deleting the older note. `vault.py merge` keeps one canonical identity, retires
+the other under a chosen `--retire-mode`, and requires an exact preview hash before it writes
+anything.
+
+- **`rewrite` (preferred)** repoints every inbound link at the canonical note and deletes the
+  retired file, so no tombstone accumulates. `merged_from` on the canonical keeps the record of
+  what was retired.
+- **`redirect` (default)** leaves a checked redirect at the retired path. Use it when an inbound
+  link cannot be rewritten — one held outside the vault, or inside a sealed raw-source payload.
 
 ## Workflow
 
@@ -27,7 +33,8 @@ write either file.
    python3 90-system/automation/vault.py merge "40-knowledge/concepts/Canonical.md" "40-knowledge/concepts/Retired.md" --merged-body "90-system/indexes/.merge-drafts/canonical.md"
    ```
 
-3. Review `metadata_conflicts`, `links_at_risk`, alias/tag unions, `merged_from`, and the
+3. Review `metadata_conflicts`, `links_at_risk`, `inbound_rewrites`, `inbound_unrewritable`,
+   alias/tag unions, `merged_from`, and the
    two selected paths. Revise the draft until the preview is correct.
 4. Apply the exact plan:
 
@@ -43,13 +50,16 @@ explicitly resolving or accepting every reported item.
 
 - The canonical note keeps its `id`, path, type, and creation date. Its aliases and tags
   are unioned, the retired title becomes an alias, and `merged_from` records the old path.
-- The retired file is not deleted. It keeps its own `id` and title, becomes
-  `type: redirect` / `status: superseded`, and points to the canonical note with
-  `redirect_to`.
-- Existing backlinks are not rewritten. They continue to resolve through the retired
-  path. The checker rejects broken, self-targeting, chained, or cyclic redirects. A merge
-  also refuses to retire a note that already has inbound redirects, because doing so would
-  create a redirect chain.
+- Under `rewrite` the retired file is deleted and every inbound wikilink is repointed at the
+  canonical note. An alias that merely names the retired note becomes the canonical title; a
+  human-written label is preserved. Links inside code fences and spans are left alone, and
+  sealed raw sources and generated indexes are never edited — they are reported as
+  `inbound_unrewritable` and must be accepted explicitly.
+- Under `redirect` the retired file is kept. It keeps its own `id` and title, becomes
+  `type: redirect` / `status: superseded`, points to the canonical note with `redirect_to`, and
+  existing backlinks continue to resolve through it. The checker rejects broken,
+  self-targeting, chained, or cyclic redirects. A merge also refuses to retire a note that
+  already has inbound redirects, because doing so would create a redirect chain.
 - Canonical-only metadata wins. Retired-only or conflicting metadata is reported rather
   than guessed. Typed relations and freshness declarations are removed from the redirect;
   incorporate any still-valid claims into the reviewed canonical draft and metadata.

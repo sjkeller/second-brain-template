@@ -3227,6 +3227,108 @@ def replace_note_pair(
                 temporary.unlink()
 
 
+def apply_merge_rewrite(
+    canonical_path: Path,
+    canonical_text: str,
+    retired_path: Path,
+    inbound: list[tuple[Path, str, str]],
+    canonical_original: str,
+) -> None:
+    """Write the canonical and every repointed note, then delete the retired file.
+
+    Used by `--retire-mode rewrite`. Every replacement is staged before any swap, and a
+    failed swap restores the notes already written, so a partial merge cannot survive.
+    """
+    writes: list[tuple[Path, str, str]] = [(canonical_path, canonical_text, canonical_original)]
+    writes.extend(inbound)
+    originals = {path: original for path, _, original in writes}
+    temporaries: list[tuple[Path, Path]] = []
+    replaced: list[Path] = []
+    try:
+        for path, text, _ in writes:
+            temporaries.append((path, prepare_temp_text(path, text)))
+        for path, temporary in temporaries:
+            os.replace(temporary, path)
+            replaced.append(path)
+        retired_path.unlink()
+    except OSError:
+        for path in reversed(replaced):
+            restore = prepare_temp_text(path, originals[path])
+            os.replace(restore, path)
+        raise
+    finally:
+        for _, temporary in temporaries:
+            if temporary.exists():
+                temporary.unlink()
+
+
+def repoint_wikilinks(
+    text: str,
+    retired_relative: str,
+    canonical_relative: str,
+    canonical_title: str,
+    retired_labels: set[str],
+    by_path: dict[str, Note],
+    by_stem: dict[str, list[Note]],
+) -> tuple[str, int]:
+    """Repoint every wikilink resolving to the retired note at the canonical note.
+
+    An alias that merely names the retired note is replaced by the canonical title; a
+    human-written label is preserved. Links inside code spans and fences are left alone.
+    """
+    target_path = canonical_relative.removesuffix(".md")
+    blanked = strip_code(text)
+    count = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal count
+        if not blanked[match.start():match.end()].strip():
+            return match.group(0)  # inside a code fence or span
+        raw_target, pipe, alias = match.group(1).partition("|")
+        raw_target, hash_separator, heading = raw_target.partition("#")
+        probe = raw_target.strip()
+        if not probe or probe.startswith(("http://", "https://")):
+            return match.group(0)
+        resolved = resolve_target(probe.removesuffix(".md"), by_path, by_stem)
+        if resolved is None or resolved.path != retired_relative:
+            return match.group(0)
+        label = alias.strip() if pipe else ""
+        if not label or label.casefold() in retired_labels:
+            label = canonical_title
+        count += 1
+        embed = "!" if match.group(0).startswith("!") else ""
+        return f"{embed}[[{target_path}{hash_separator}{heading}|{label}]]"
+
+    return WIKILINK_RE.sub(replace, text), count
+
+
+def drop_duplicate_link_lines(text: str, canonical_relative: str) -> str:
+    """Collapse list lines that became identical links to the canonical note.
+
+    A MOC that listed both the canonical and the retired note ends up with the same entry
+    twice after repointing. Only a list item whose whole content is one wikilink to the
+    canonical is considered, so repeated links in prose are left alone.
+    """
+    target = canonical_relative.removesuffix(".md")
+    entry = re.compile(
+        r"^\s*[-*]\s*\[\[" + re.escape(target) + r"(\|[^\]]*)?\]\]\s*$"
+    )
+    seen: set[str] = set()
+    kept: list[str] = []
+    for line in text.split("\n"):
+        if entry.match(line):
+            key = line.strip()
+            if key in seen:
+                continue
+            seen.add(key)
+        kept.append(line)
+    return "\n".join(kept)
+
+
+# Notes that must never be edited to repoint a link: sealed captures and generated output.
+REWRITE_EXCLUDED_PREFIXES = (RAW_SOURCE_PREFIX, "90-system/indexes/")
+RETIRE_MODES = ("redirect", "rewrite")
+
 MERGE_EXCLUDED_PREFIXES = (
     RAW_SOURCE_PREFIX, "50-journal/", "80-archive/", "90-system/", "99-attachments/",
 )
@@ -3266,6 +3368,7 @@ def build_merge_plan(
     canonical_requested: str,
     retired_requested: str,
     merged_body_requested: str,
+    retire_mode: str = "redirect",
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     canonical_input, error = merge_input_note(root, canonical_requested, "canonical")
     if error:
@@ -3382,7 +3485,41 @@ def build_merge_plan(
         target for target in retired.links
         if link_identity(target) != canonical_target and link_identity(target) not in final_links
     }, key=str.casefold)
-    warnings = bool(metadata_conflicts or links_at_risk)
+
+    # `rewrite` repoints every inbound link at the canonical note and deletes the retired
+    # file, so no tombstone is left behind. `redirect` keeps the historical behaviour.
+    inbound_rewrites: list[dict[str, Any]] = []
+    inbound_unrewritable: list[str] = []
+    staged_rewrites: list[tuple[Path, str, str]] = []
+    if retire_mode == "rewrite":
+        retired_labels = {retired.title.casefold(), retired.stem.casefold()}
+        for candidate in all_notes:
+            if candidate.path in {retired_relative, canonical_relative}:
+                continue
+            if not any(
+                resolve_target(target, by_path, by_stem)
+                and resolve_target(target, by_path, by_stem).path == retired_relative
+                for target in candidate.links
+            ):
+                continue
+            if candidate.path.startswith(REWRITE_EXCLUDED_PREFIXES):
+                inbound_unrewritable.append(candidate.path)
+                continue
+            candidate_path = root / candidate.path
+            original = candidate_path.read_text(encoding="utf-8-sig")
+            rewritten, changed = repoint_wikilinks(
+                original, retired_relative, canonical_relative, canonical.title,
+                retired_labels, by_path, by_stem,
+            )
+            if changed:
+                # A MOC listing both notes would otherwise carry the canonical twice.
+                rewritten = drop_duplicate_link_lines(rewritten, canonical_relative)
+                inbound_rewrites.append({"path": candidate.path, "links": changed})
+                staged_rewrites.append((candidate_path, rewritten, original))
+        inbound_rewrites.sort(key=lambda entry: str(entry["path"]).casefold())
+        inbound_unrewritable.sort(key=str.casefold)
+
+    warnings = bool(metadata_conflicts or links_at_risk or inbound_unrewritable)
     plan_material = {
         "canonical_path": canonical_relative,
         "retired_path": retired_relative,
@@ -3393,6 +3530,14 @@ def build_merge_plan(
         "canonical_after": hashlib.sha256(canonical_final.encode("utf-8")).hexdigest(),
         "retired_after": hashlib.sha256(retired_final.encode("utf-8")).hexdigest(),
     }
+    if retire_mode != "redirect":
+        # Keep the historical plan hash byte-identical for the default mode.
+        plan_material["retire_mode"] = retire_mode
+        plan_material["retired_after"] = None
+        plan_material["inbound_after"] = [
+            [path.relative_to(root).as_posix(), hashlib.sha256(text.encode("utf-8")).hexdigest()]
+            for path, text, _ in staged_rewrites
+        ]
     plan_hash = hashlib.sha256(
         json.dumps(plan_material, sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
@@ -3402,10 +3547,13 @@ def build_merge_plan(
         "canonical": canonical_relative,
         "retired": retired_relative,
         "merged_body": body_relative,
+        "retire_mode": retire_mode,
         "changes": {
             "canonical_updated": True,
-            "retired_becomes_redirect": True,
-            "retired_deleted": False,
+            "retired_becomes_redirect": retire_mode == "redirect",
+            "retired_deleted": retire_mode == "rewrite",
+            "inbound_rewrites": inbound_rewrites,
+            "inbound_unrewritable": inbound_unrewritable,
             "aliases": aliases,
             "tags": tags,
             "merged_from": merged_from,
@@ -3420,6 +3568,7 @@ def build_merge_plan(
         "_retired_original": retired_raw,
         "_canonical_final": canonical_final,
         "_retired_final": retired_final,
+        "_staged_rewrites": staged_rewrites,
     }, None
 
 
@@ -3432,8 +3581,11 @@ def command_merge(
     plan_confirmation: str | None,
     accept_warnings: bool,
     compact: bool,
+    retire_mode: str = "redirect",
 ) -> int:
-    plan, error = build_merge_plan(root, canonical_requested, retired_requested, merged_body_requested)
+    plan, error = build_merge_plan(
+        root, canonical_requested, retired_requested, merged_body_requested, retire_mode
+    )
     if error:
         emit(error, compact)
         return 2
@@ -3473,12 +3625,31 @@ def command_merge(
             "hint": "Run a new dry-run preview before retrying.",
         }, compact)
         return 1
+    stale = [
+        path.relative_to(root).as_posix()
+        for path, _, original in plan["_staged_rewrites"]
+        if path.read_text(encoding="utf-8-sig") != original
+    ]
+    if stale:
+        emit({
+            "error": "merge_inputs_changed_during_apply",
+            "changed": stale,
+            "hint": "A note holding an inbound link changed since the preview. Run a new dry run.",
+        }, compact)
+        return 1
     try:
-        replace_note_pair(
-            plan["_canonical_path"], plan["_canonical_final"],
-            plan["_retired_path"], plan["_retired_final"],
-            plan["_canonical_original"],
-        )
+        if plan["retire_mode"] == "rewrite":
+            apply_merge_rewrite(
+                plan["_canonical_path"], plan["_canonical_final"],
+                plan["_retired_path"], plan["_staged_rewrites"],
+                plan["_canonical_original"],
+            )
+        else:
+            replace_note_pair(
+                plan["_canonical_path"], plan["_canonical_final"],
+                plan["_retired_path"], plan["_retired_final"],
+                plan["_canonical_original"],
+            )
     except OSError as exc:
         emit({"error": "merge_write_failed", "detail": str(exc)}, compact)
         return 1
@@ -3793,6 +3964,9 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Exact plan_sha256 emitted by the preceding dry run")
     merge_parser.add_argument("--accept-warnings", action="store_true",
                               help="Explicitly accept reported metadata conflicts or links at risk")
+    merge_parser.add_argument("--retire-mode", choices=list(RETIRE_MODES), default="redirect",
+                              help="rewrite: repoint inbound links and delete the retired note; "
+                                   "redirect: leave a redirect at the retired path (default)")
 
     new_parser = sub("new", "Create a note from its template and link its MOC")
     new_parser.add_argument("--type", dest="note_type", required=True, choices=sorted(TYPE_TEMPLATES))
@@ -3880,7 +4054,8 @@ def main(argv: list[str] | None = None) -> int:
         return command_source_seal(root, args.path, args.verify, compact)
     if args.command == "merge":
         return command_merge(root, args.canonical, args.retired, args.merged_body,
-                             args.apply, args.plan, args.accept_warnings, compact)
+                             args.apply, args.plan, args.accept_warnings, compact,
+                             args.retire_mode)
     if args.command == "new":
         return command_new(root, args.note_type, args.title, args.folder, args.tags,
                            args.status, args.link_moc, args.dry_run, compact)

@@ -110,10 +110,10 @@ Apply [[90-system/Freshness Policy|Freshness Policy]] when a claim needs an expl
 Promote into the existing matching rule whenever possible. Show source-driven canonical
 changes for review under [[90-system/AI Collaboration Policy|AI Collaboration Policy]].
 Retain a linked evidence capture only when it adds independent provenance. An approved
-duplicate merge uses [[90-system/Safe Merge Policy|Safe Merge Policy]] and preserves a redirect.
+duplicate merge uses [[90-system/Safe Merge Policy|Safe Merge Policy]] and repoints inbound links.
 Review the evidence and remove its AI-review markers after acceptance before that merge;
 the preview lists metadata that still needs consolidation. Triage and review views exclude
-redirects so the retired path does not appear as another item to process.
+redirects, so any redirect kept deliberately does not appear as another item to process.
 For a new subject, file the reviewed capture itself; remove `capture_kind` on promotion,
 and remove both AI-review markers only after human acceptance. Keep uncertainty even after
 the prose has been reviewed. Current user directions and repository rules govern the task;

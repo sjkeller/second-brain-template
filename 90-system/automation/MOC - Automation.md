@@ -61,8 +61,9 @@ capture, validation, and merge mechanics.
   payloads, Journal, System, and Attachments, which is how the edit hook uses it.
 - `... source-seal "30-resources/sources/raw/<note>.md"` — hash the delimited payload and
   change a draft raw source to `status: immutable`. Add `--verify` for a read-only check.
-- `... merge <canonical> <retired> --merged-body <draft>` — dry-run a consolidation and
-  redirect plan. Writing additionally requires `--apply --plan <plan_sha256>`; see
+- `... merge <canonical> <retired> --merged-body <draft>` — dry-run a consolidation plan.
+  Add `--retire-mode rewrite` to repoint inbound links and delete the retired note instead of
+  leaving a redirect. Writing additionally requires `--apply --plan <plan_sha256>`; see
   [[90-system/Safe Merge Policy|Safe Merge Policy]].
 
 ## Report

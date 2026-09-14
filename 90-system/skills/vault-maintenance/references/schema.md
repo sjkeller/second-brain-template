@@ -41,7 +41,8 @@ Each type has a home folder, and `check` reports notes that sit outside it:
 | `system` | `90-system` |
 
 `note`, `moc`, and `redirect` are unconstrained: `note` is the catch-all capture type, a
-MOC lives inside the folder it indexes, and a redirect must remain at the retired path.
+MOC lives inside the folder it indexes, and a redirect, when one is kept, remains at the
+retired path.
 Notes under `00-inbox` are exempt because they are not filed yet, and notes under
 `80-archive` keep the type they had when they were archived.
 
@@ -78,7 +79,8 @@ self-edges, inverse declarations, and supersession cycles.
 
 A redirect has `status: superseded` and one quoted `redirect_to` wikilink. It retains the
 retired note's path, id, and H1 and is exempt from MOC coverage. Create redirects only via
-[[90-system/Safe Merge Policy]].
+[[90-system/Safe Merge Policy]], and only when an inbound link cannot be repointed — the
+preferred `--retire-mode rewrite` leaves no redirect at all.
 
 ## MOC anchors
 
