@@ -48,6 +48,7 @@ RECALL_EVENTS = {"SessionStart", "UserPromptSubmit"}
 HARVEST_EVENTS = {"UserPromptSubmit", "Stop", "PreCompact"}
 
 EDIT_TOOLS = {"edit", "write", "multiedit", "notebookedit", "apply_patch", "applypatch"}
+SKILL_TOOLS = {"skill", "invoke_skill", "run_skill"}
 PATCH_MARKERS = ("apply_patch", "*** Begin Patch")
 TOOL_NODE_TYPES = {
     "tool_use",
@@ -235,30 +236,67 @@ def tool_arguments(node: dict) -> dict:
     return {}
 
 
-class Activity:
-    """Session activity since the watermark, measured from the last successful capture.
+def node_call_id(node: dict) -> str:
+    for key in ("id", *RESULT_ID_KEYS):
+        value = node.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
-    A capture ends one window and opens the next. Counting it as a permanent veto instead
+
+def argument_blob(arguments: dict) -> str:
+    raw = arguments.get("_raw")
+    if isinstance(raw, str):
+        return raw
+    try:
+        return json.dumps(arguments)
+    except (TypeError, ValueError):
+        return ""
+
+
+def closes_harvest_window(lowered: str, blob: str) -> bool:
+    """Whether this call is evidence that the harvest skill ran to completion.
+
+    A harvest that finds nothing novel writes no note, so ``capture_note`` alone cannot end
+    the window: a null run would leave its own turns to be counted towards the next signal,
+    re-arming the hook almost immediately. The skill's invocation and the ``vault_status``
+    check it closes with are the marks a null run still leaves.
+
+    Matching the skill name only inside a skill-invocation tool keeps an ordinary edit to
+    this file, which contains that name as a literal, from being read as a harvest.
+    """
+    if lowered.rsplit("__", 1)[-1] in SKILL_TOOLS:
+        return SKILL_NAME in blob
+    return "vault_status" in lowered
+
+
+class Activity:
+    """Session activity since the watermark, measured from the last completed harvest.
+
+    A harvest ends one window and opens the next. Counting it as a permanent veto instead
     would suppress every later harvest, because the watermark only ever advances when a
     harvest is signalled.
+
+    A *completed* harvest, not only a fruitful one: a run that correctly decides nothing is
+    novel closes its window too, so its own turns are not counted towards the next signal.
     """
 
     def __init__(self) -> None:
         self.assistant_turns = 0
         self.edits = 0
         self.captures = 0
-        self.capture_offset: int | None = None
+        self.window_offset: int | None = None
         self.lines = 0
         self.recognised = 0
         self.raw_turns = 0
         self.edit_events: list[str] = []
-        self.capture_marks: list[tuple[str, int, int, int]] = []
-        self.line_captures: list[str] = []
+        self.window_marks: list[tuple[str, int, int, int]] = []
+        self.line_marks: list[str] = []
         self.error_call_ids: set[str] = set()
 
     def absorb_line(self, payload: Any, position: int) -> None:
         self.lines += 1
-        self.line_captures = []
+        self.line_marks = []
         seen_assistant = False
 
         def visit(node: dict) -> None:
@@ -281,10 +319,10 @@ class Activity:
         if seen_assistant:
             self.raw_turns += 1
             self.recognised += 1
-        # Mark after the line is fully counted, so the capture's own turn closes the old
+        # Mark after the line is fully counted, so the harvest's own turn closes the old
         # window rather than opening the new one.
-        for call_id in self.line_captures:
-            self.capture_marks.append((call_id, position, self.raw_turns, len(self.edit_events)))
+        for call_id in self.line_marks:
+            self.window_marks.append((call_id, position, self.raw_turns, len(self.edit_events)))
 
     def absorb_result(self, node: dict) -> None:
         """Remember failed tool results, so a failed capture does not end a window."""
@@ -297,13 +335,13 @@ class Activity:
                 return
 
     def finalise(self) -> None:
-        """Reduce the raw counts to the window that follows the last successful capture."""
+        """Reduce the raw counts to the window that follows the last completed harvest."""
         turns_before, edits_before = 0, 0
-        for call_id, offset, turns, edits in reversed(self.capture_marks):
+        for call_id, offset, turns, edits in reversed(self.window_marks):
             if call_id and call_id in self.error_call_ids:
                 continue
             turns_before, edits_before = turns, edits
-            self.capture_offset = offset
+            self.window_offset = offset
             break
         self.assistant_turns = self.raw_turns - turns_before
         window = self.edit_events[edits_before:]
@@ -314,23 +352,14 @@ class Activity:
         if "capture_note" in lowered:
             self.captures += 1
             self.recognised += 1
-            call_id = ""
-            for key in ("id", *RESULT_ID_KEYS):
-                value = node.get(key)
-                if isinstance(value, str) and value.strip():
-                    call_id = value.strip()
-                    break
-            self.line_captures.append(call_id)
+            self.line_marks.append(node_call_id(node))
             return
         arguments = tool_arguments(node)
-        raw = arguments.get("_raw")
-        if isinstance(raw, str):
-            blob = raw
-        else:
-            try:
-                blob = json.dumps(arguments)
-            except (TypeError, ValueError):
-                blob = ""
+        blob = argument_blob(arguments)
+        if closes_harvest_window(lowered, blob):
+            self.recognised += 1
+            self.line_marks.append(node_call_id(node))
+            return
         edits_files = lowered.rsplit("__", 1)[-1] in EDIT_TOOLS or any(
             marker in blob for marker in PATCH_MARKERS
         )
@@ -555,9 +584,10 @@ def dispatch(root: Path, payload: dict[str, Any]) -> int:
 
     stamp = utc_now().isoformat(timespec="seconds")
     entry.update({"cwd": payload.get("cwd"), "updated_at": stamp})
-    if activity.capture_offset is not None:
-        # A successful capture accounts for the work before it and settles any held signal.
-        entry["offset"] = max(int(entry.get("offset", 0) or 0), activity.capture_offset)
+    if activity.window_offset is not None:
+        # A completed harvest, with or without a capture, accounts for the work before it
+        # and settles any held signal.
+        entry["offset"] = max(int(entry.get("offset", 0) or 0), activity.window_offset)
         entry["pending_harvest"] = False
 
     sections: list[str] = []

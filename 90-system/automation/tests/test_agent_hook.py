@@ -108,6 +108,44 @@ def failed_result_line(call_id: str = "cap-1") -> str:
     )
 
 
+def skill_line(skill: str = "second-brain-harvest", call_id: str = "skill-1") -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": "Skill",
+                        "input": {"skill": skill},
+                    }
+                ],
+            },
+        }
+    )
+
+
+def vault_status_line(call_id: str = "status-1") -> str:
+    return json.dumps(
+        {
+            "type": "assistant",
+            "message": {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": call_id,
+                        "name": "mcp__second-brain__vault_status",
+                        "input": {},
+                    }
+                ],
+            },
+        }
+    )
+
+
 class HookFixture(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
@@ -235,15 +273,15 @@ class RecallGateTest(HookFixture):
         self.assertFalse(hook.worth_recalling(padded, self.settings))
 
 
-class CaptureWindowTest(HookFixture):
-    """A capture ends one activity window and opens the next; it is not a permanent veto."""
+class HarvestWindowTest(HookFixture):
+    """A harvest ends one activity window and opens the next; it is not a permanent veto."""
 
     def test_work_before_a_capture_is_not_counted(self) -> None:
         self.write_transcript(claude_lines(20, ["a.c", "b.c"]) + [capture_line()])
         activity, _ = hook.scan_transcript(str(self.transcript), 0)
         self.assertEqual(activity.assistant_turns, 0)
         self.assertEqual(activity.edits, 0)
-        self.assertIsNotNone(activity.capture_offset)
+        self.assertIsNotNone(activity.window_offset)
 
     def test_work_after_a_capture_is_counted(self) -> None:
         self.write_transcript(
@@ -264,7 +302,7 @@ class CaptureWindowTest(HookFixture):
         )
         activity, _ = hook.scan_transcript(str(self.transcript), 0)
         self.assertEqual(activity.assistant_turns, 21)
-        self.assertIsNone(activity.capture_offset)
+        self.assertIsNone(activity.window_offset)
         self.assertTrue(hook.is_due(activity, {}, hook.DEFAULTS["harvest"], False))
 
     def test_the_last_successful_capture_wins(self) -> None:
@@ -289,6 +327,75 @@ class CaptureWindowTest(HookFixture):
         self.write_transcript(claude_lines(20, []) + [capture_line()] + claude_lines(30, []))
         activity, _ = hook.scan_transcript(str(self.transcript), offset)
         self.assertEqual(activity.assistant_turns, 30)
+
+
+class NullHarvestWindowTest(HookFixture):
+    """A harvest that captures nothing still closes its window.
+
+    Its own turns must not be counted towards the next signal, or a quiet session re-fires
+    the hook on the turns the previous harvest spent reporting that there was nothing to do.
+    """
+
+    def test_a_skill_invocation_closes_the_window(self) -> None:
+        self.write_transcript(claude_lines(20, []) + [skill_line()])
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 0)
+        self.assertIsNotNone(activity.window_offset)
+
+    def test_a_null_harvest_is_not_immediately_due_again(self) -> None:
+        self.write_transcript(
+            claude_lines(30, []) + [skill_line()] + claude_lines(4, []) + [vault_status_line()]
+        )
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 0)
+        self.assertFalse(hook.is_due(activity, {}, hook.DEFAULTS["harvest"], False))
+
+    def test_the_closing_vault_status_wins_over_the_invocation(self) -> None:
+        self.write_transcript(
+            claude_lines(3, []) + [skill_line()] + claude_lines(6, []) + [vault_status_line()]
+        )
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 0)
+
+    def test_work_after_a_null_harvest_is_counted(self) -> None:
+        self.write_transcript(
+            claude_lines(20, []) + [skill_line()] + claude_lines(30, ["a.c", "b.c"])
+        )
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 30)
+        self.assertEqual(activity.edits, 2)
+        self.assertTrue(hook.is_due(activity, {}, hook.DEFAULTS["harvest"], False))
+
+    def test_an_unrelated_skill_does_not_close_the_window(self) -> None:
+        self.write_transcript(claude_lines(20, []) + [skill_line("code-review")])
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertEqual(activity.assistant_turns, 21)
+        self.assertIsNone(activity.window_offset)
+
+    def test_editing_the_hook_itself_does_not_close_the_window(self) -> None:
+        edit = json.dumps(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "edit-1",
+                            "name": "Edit",
+                            "input": {
+                                "file_path": "agent_hook.py",
+                                "new_string": 'SKILL_NAME = "second-brain-harvest"',
+                            },
+                        }
+                    ],
+                },
+            }
+        )
+        self.write_transcript(claude_lines(20, []) + [edit])
+        activity, _ = hook.scan_transcript(str(self.transcript), 0)
+        self.assertIsNone(activity.window_offset)
+        self.assertEqual(activity.edits, 1)
 
 
 class PromptContractTest(HookFixture):
