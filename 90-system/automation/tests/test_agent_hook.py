@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import importlib.util
 import io
 import json
@@ -141,9 +142,13 @@ class HookFixture(unittest.TestCase):
 
     def dispatch_bytes(self, payload: dict, recall: str = "") -> tuple[int, bytes]:
         stream = io.BytesIO()
-        with mock.patch.object(hook, "recall_block", return_value=recall):
-            with mock.patch.object(sys, "stdout", SimpleNamespace(buffer=stream)):
-                code = hook.dispatch(self.root, payload)
+        # Pin the built-in thresholds so tuning the live agent_hook_config.json cannot
+        # move a fixture transcript across a harvest boundary.
+        defaults = copy.deepcopy(hook.DEFAULTS)
+        with mock.patch.object(hook, "load_config", return_value=defaults):
+            with mock.patch.object(hook, "recall_block", return_value=recall):
+                with mock.patch.object(sys, "stdout", SimpleNamespace(buffer=stream)):
+                    code = hook.dispatch(self.root, payload)
         return code, stream.getvalue()
 
     def state(self, session_id: str = "session-1") -> dict:
